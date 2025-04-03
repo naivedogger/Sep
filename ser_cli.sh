@@ -15,6 +15,7 @@ then
     --max_coro 256 --cq_size 64 \
     --mem_size 91268055040
 else
+    cd "build"
     echo "machine" $1
 
     for num_cli in `seq $2 $2`;do
@@ -23,15 +24,15 @@ else
                 echo "num_cli" $num_cli "num_coro" $num_coro "load_num" $load_num
                 # ./ser_cli_var_kv \
                 ./ser_cli \
-                --server_ip 192.168.1.51 --num_machine $4 --num_cli $num_cli --num_coro $num_coro \
+                --server_ip 192.169.1.15 --num_machine $4 --num_cli $num_cli --num_coro $num_coro \
                 --gid_idx 1 \
                 --max_coro 256 --cq_size 64 \
                 --machine_id $1  \
                 --load_num $load_num \
                 --num_op 1000000 \
                 --pattern_type 0 \
-                --insert_frac 0.0 \
-                --read_frac   1.0 \
+                --insert_frac 1.0 \
+                --read_frac   0.0 \
                 --update_frac  0.0 \
                 --delete_frac  0.0 \
                 --read_size     64

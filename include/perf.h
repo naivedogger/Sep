@@ -7,8 +7,8 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
-// #define USE_PERF
-// #define USE_SUM_COST
+#define USE_PERF
+#define USE_SUM_COST
 
 struct Perf
 {

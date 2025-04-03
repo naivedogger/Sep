@@ -20,19 +20,22 @@ coro_num = args.coro_num
 
 # Define the connection information for each server
 servers = [
-    {'host': '192.168.1.51', 'user': 'xxx', 'password': 'xxx'},
-    {'host': '192.168.1.52', 'user': 'xxx', 'password': 'xxx'},
-    {'host': '192.168.1.53', 'user': 'xxx', 'password': 'xxx'},
-    {'host': '192.168.1.11', 'user': 'xxx', 'password': 'xxx'},
-    {'host': '192.168.1.12', 'user': 'xxx', 'password': 'xxx'},
-    {'host': '192.168.1.13', 'user': 'xxx', 'password': 'xxx'},
-    {'host': '192.168.1.14', 'user': 'xxx', 'password': 'xxx'},
-    {'host': '192.168.1.10', 'user': 'xxx', 'password': 'xxx'},
+    {'host': '192.169.1.15:22', 'user': 'hyy'},
+    #{'host': '192.168.1.52', 'user': 'xxx', 'password': 'xxx'},
+    #{'host': '192.168.1.53', 'user': 'xxx', 'password': 'xxx'},
+    #{'host': '192.168.1.11', 'user': 'xxx', 'password': 'xxx'},
+    #{'host': '192.168.1.12', 'user': 'xxx', 'password': 'xxx'},
+    #{'host': '192.168.1.13', 'user': 'xxx', 'password': 'xxx'},
+    #{'host': '192.168.1.14', 'user': 'xxx', 'password': 'xxx'},
+    #{'host': '192.168.1.10', 'user': 'xxx', 'password': 'xxx'},
     # Add more servers if needed
 ]
 
 # Create a list of Connection objects for each server
-connections = [Connection(host=server['host'], user=server['user'], connect_kwargs={"password": server['password']}) for server in servers]
+#connections = [Connection(host=server['host'], user=server['user'], connect_kwargs={"password": server['password']}) for server in servers]
+private_key_path = "/home/hyy/.ssh/id_rsa"
+
+connections = [Connection(host=server['host'], user=server['user'], connect_kwargs={"key_filename": private_key_path}) for server in servers]
 
 # Define a task to run on all servers
 def server_command(i):
@@ -46,8 +49,11 @@ def client_command(i):
     print(f"client: {conn.host}")
     # conn.run('killall ser_cli_var_kv', warn=True)
     # conn.run('free -h', warn=True)
-    result = conn.run(f'rm -f insert*.txt search*.txt out.txt core') 
-    result = conn.run(f'./run.sh {i} {cli_num} {coro_num} {num_servers}') 
+    with conn.cd('./SepHash'):
+        result = conn.run('pwd')
+        print(f"Current working directory on {conn.host}: {result.stdout.strip()}")
+        result = conn.run(f'rm -f insert*.txt search*.txt out.txt core') 
+        result = conn.run(f'./run.sh {i} {cli_num} {coro_num} {num_servers}') 
 
 # Execute the task on all servers
 threads = []

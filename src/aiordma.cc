@@ -1070,6 +1070,23 @@ rdma_buffer_future rdma_conn::read(uint64_t raddr, uint32_t rkey, uint32_t len)
     return rdma_buffer_future(fur.cor, fur.conn, buf);
 }
 
+// TODO:实现一个batch_read
+
+rdma_future rdma_conn::read_batch(uint64_t* raddrs, uint32_t rkey, void **laddrs, uint32_t len, uint32_t lkey, int size) {
+    // 需要确保raddr是同一台远端机器
+    for(int i = 0; i < size; i ++) {
+        uint64_t raddr = raddrs[i];
+        if(raddr==0){
+            log_err("zero raddr");
+            // exit(-1);
+            int* ptr = NULL;
+            *ptr = 10; // 在这里引发段错误
+        }
+        
+    }
+
+}
+
 rdma_future rdma_conn::read(uint64_t raddr, uint32_t rkey, void *laddr, uint32_t len, uint32_t lkey)
 {
     if(raddr==0){

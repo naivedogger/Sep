@@ -459,6 +459,7 @@ public:
     rdma_buffer_future read(uint64_t raddr, uint32_t rkey, uint32_t len);
     rdma_buffer_future read(const rdma_rmr &remote_mr, uint32_t offset, uint32_t len)
     { return read(remote_mr.raddr + offset, remote_mr.rkey, len); }
+    rdma_future read_batch(uint64_t* raddr, uint32_t rkey, void **laddr, uint32_t len, uint32_t lkey, int size);
     rdma_future read(uint64_t raddr, uint32_t rkey, void *laddr, uint32_t len, uint32_t lkey);
     rdma_future read(const rdma_rmr &remote_mr, uint32_t offset, void *laddr, uint32_t len, uint32_t lkey)
     { return read(remote_mr.raddr + offset, remote_mr.rkey, laddr, len, lkey); }
