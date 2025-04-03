@@ -66,8 +66,8 @@ struct Bucket
 
 struct Segment
 {
-    // uint32_t lock;
     struct Bucket buckets[BUCKET_PER_SEGMENT * 3];
+    uint32_t lock;
 } __attribute__((aligned(1)));
 
 struct DirEntry

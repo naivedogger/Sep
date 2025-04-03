@@ -35,6 +35,7 @@ const int rdma_max_pending_tasks = 16;
 const int dma_default_workq_size = 64;
 const int dma_default_inv_buf_size = 128;
 const int dma_tempmp_mmap_name = 114514;
+const int kReadOroMax = 500;
 
 using rdma_dmmr = std::tuple<ibv_dm *, ibv_mr *>;
 
@@ -459,7 +460,7 @@ public:
     rdma_buffer_future read(uint64_t raddr, uint32_t rkey, uint32_t len);
     rdma_buffer_future read(const rdma_rmr &remote_mr, uint32_t offset, uint32_t len)
     { return read(remote_mr.raddr + offset, remote_mr.rkey, len); }
-    rdma_future read_batch(uint64_t* raddr, uint32_t rkey, void **laddr, uint32_t len, uint32_t lkey, int size);
+    rdma_future read_batch(uint64_t* raddr, uint32_t rkey, void *laddr, uint32_t len, uint32_t lkey, int size);
     rdma_future read(uint64_t raddr, uint32_t rkey, void *laddr, uint32_t len, uint32_t lkey);
     rdma_future read(const rdma_rmr &remote_mr, uint32_t offset, void *laddr, uint32_t len, uint32_t lkey)
     { return read(remote_mr.raddr + offset, remote_mr.rkey, laddr, len, lkey); }

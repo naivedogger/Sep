@@ -501,9 +501,25 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         cur_buc->suffix = new_seg_loc;
     }
     
+    // 需要所有叶子的指针
     if(local_depth - INIT_DEPTH >= 8 && (local_depth - INIT_DEPTH) % 8 == 0) {
         // TODO：读取所有key，更新fp2，需要实现一个read_batch
-
+        uint64_t ptr_leaves[BUCKET_PER_SEGMENT*3*SLOT_PER_BUCKET];
+        int leaves_cnt = 0;
+        for(int i = 0; i < BUCKET_PER_SEGMENT * 3; i ++) {
+            for(int j = 0; j < SLOT_PER_BUCKET; j ++) {
+                ptr_leaves[leaves_cnt++] = ralloc.ptr((new_seg->buckets[i]).slots[j].offset);
+            }
+        }
+        KVBlock *kv_block[leaves_cnt];
+        for(int i = 0; i < leaves_cnt; i ++) {
+            kv_block[i] = (KVBlock*)alloc.alloc(1);
+        }
+        int round = (leaves_cnt + kReadOroMax - 1) / kReadOroMax;
+        for(int i = 0; i < round; i ++) {
+            co_await conn->read_batch(&ptr_leaves[kReadOroMax*i], rmr.rkey, kv_block, 1, lmr->lkey, leaves_cnt);
+        }
+        // TODO：更新fp2
     }
 
     co_await conn->write(new_seg_ptr, rmr.rkey, new_seg, sizeof(Segment), lmr->lkey);

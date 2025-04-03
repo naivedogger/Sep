@@ -1072,19 +1072,28 @@ rdma_buffer_future rdma_conn::read(uint64_t raddr, uint32_t rkey, uint32_t len)
 
 // TODO:实现一个batch_read
 
-rdma_future rdma_conn::read_batch(uint64_t* raddrs, uint32_t rkey, void **laddrs, uint32_t len, uint32_t lkey, int size) {
-    // 需要确保raddr是同一台远端机器
-    for(int i = 0; i < size; i ++) {
+rdma_future rdma_conn::read_batch(uint64_t* raddrs, uint32_t rkey, void *laddrs, uint32_t len, uint32_t lkey, int size) {
+    // 需要确保raddr是同一台远端机器,len是每一段的长度，size是数量，需要确保size<kReadOroMax
+    struct ibv_send_wr wr[kReadOroMax];
+    struct ibv_send_wr *wrbad;
+    struct ibv_sge sg[kReadOroMax];
+
+    void** ptr_array = static_cast<void**> (laddrs);
+    
+    for(int i = 0; i < size; i++) {
         uint64_t raddr = raddrs[i];
+        void* laddr = ptr_array[i];
         if(raddr==0){
             log_err("zero raddr");
             // exit(-1);
             int* ptr = NULL;
             *ptr = 10; // 在这里引发段错误
         }
-        
+        fill_rw_wr<IBV_WR_RDMA_READ>(&wr[i],&sg[i],raddr,rkey,laddr,len,lkey);
+        wr[i].next = (i == size-1) ? NULL : &wr[i+1];
     }
-
+    auto res = do_send(&wr[0],&wr[size-1]);
+    return res;
 }
 
 rdma_future rdma_conn::read(uint64_t raddr, uint32_t rkey, void *laddr, uint32_t len, uint32_t lkey)
