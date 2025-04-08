@@ -3,9 +3,34 @@
 namespace FASTSHIFT
 {
 
+inline __attribute__((always_inline)) uint64_t get_shift_bits(uint64_t pattern, uint64_t local_depth)
+{
+    uint64_t shift_bits = (local_depth - INIT_DEPTH - 1) / 8;
+    shift_bits *= 8;
+    shift_bits += INIT_DEPTH;
+    return shift_bits;
+}
+
+inline __attribute__((always_inline)) uint64_t get_mask_bits(uint64_t pattern, uint64_t local_depth)
+{
+    uint64_t mask_bits = (local_depth - INIT_DEPTH) % 8 + 1;
+    return mask_bits;
+}
+
+inline __attribute__((always_inline)) uint64_t get_block_size(uint64_t count)
+{
+    return count * KVBLOCK_SIZE;
+}
+
 inline __attribute__((always_inline)) uint64_t fp(uint64_t pattern)
 {
     return ((uint64_t)((pattern)>>32)&((1<<8)-1));
+}
+
+inline __attribute__((always_inline)) uint64_t fp2(uint64_t pattern, uint64_t local_depth)
+{
+    uint64_t shift_bits = get_shift_bits(pattern, local_depth);
+    return ((uint64_t)((pattern)>>shift_bits)&((1<<8)-1));
 }
 
 inline __attribute__((always_inline)) uint64_t get_seg_loc(uint64_t pattern, uint64_t global_depth)
@@ -39,6 +64,14 @@ inline __attribute__((always_inline)) uint64_t get_over_ptr(uint64_t buc_idx, ui
 inline __attribute__((always_inline)) bool check_suffix(uint64_t suffix, uint64_t seg_loc, uint64_t local_depth)
 {
     return ((suffix & ((1 << local_depth) - 1)) ^ (seg_loc & ((1 << local_depth) - 1)));
+}
+
+inline __attribute__((always_inline)) bool check_empty(uint64_t pattern, uint64_t key, uint64_t local_depth)
+{
+    uint64_t shift_bits = get_shift_bits(pattern, local_depth);
+    uint64_t mask_bits = get_mask_bits(pattern, local_depth);
+    // TODO：再想想？应该只要有 1 位不一样就说明是空的
+    return ((pattern >> shift_bits) ^ (key >> shift_bits)) & ((1 << mask_bits) - 1);
 }
 
 void PrintDir(Directory *dir)
@@ -351,10 +384,16 @@ Retry:
         buc_ptr = (round / 2 ? bucptr_2 : bucptr_1) + (round % 2 ? sizeof(Bucket) : 0);
         for (uint64_t i = 0; i < SLOT_PER_BUCKET; i++)
         {
-            if (buc->slots[i].fp == tmp->fp && buc->slots[i].len == tmp->len && buc->slots[i].offset != tmp->offset)
+            if (buc->slots[i].fp == tmp->fp && buc->slots[i].fp2 == tmp->fp2 && buc->slots[i].offset != tmp->offset)
             {
-                char *tmp_key = (char *)alloc.alloc(buc->slots[i].len);
-                co_await conn->read(ralloc.ptr(buc->slots[i].offset), rmr.rkey, tmp_key, buc->slots[i].len, lmr->lkey);
+                char *tmp_key = (char *)alloc.alloc(get_block_size(PREFECTH_FACTOR));
+                co_await conn->read(ralloc.ptr(buc->slots[i].offset), rmr.rkey, tmp_key, get_block_size(PREFECTH_FACTOR), lmr->lkey);
+                // TODO: check the actual len specified in block #1
+                uint64_t kv_len = *(uint64_t*)(tmp_key + sizeof(uint64_t));
+                if(kv_len > PREFECTH_FACTOR) {
+                    tmp_key = (char*)alloc.alloc(get_block_size(kv_len));
+                    co_await conn->read(ralloc.ptr(buc->slots[i].offset), rmr.rkey, tmp_key, get_block_size(kv_len), lmr->lkey);
+                }
                 if (memcmp(key->data, tmp_key + sizeof(uint64_t) * 2, key->len) == 0)
                 {
                     // log_err("[%lu:%lu]Duplicate-key :%lu", cli_id, coro_id, *(uint64_t *)key->data);
@@ -502,25 +541,26 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
     }
     
     // 需要所有叶子的指针
-    if(local_depth - INIT_DEPTH >= 8 && (local_depth - INIT_DEPTH) % 8 == 0) {
-        // TODO：读取所有key，更新fp2，需要实现一个read_batch
-        uint64_t ptr_leaves[BUCKET_PER_SEGMENT*3*SLOT_PER_BUCKET];
-        int leaves_cnt = 0;
-        for(int i = 0; i < BUCKET_PER_SEGMENT * 3; i ++) {
-            for(int j = 0; j < SLOT_PER_BUCKET; j ++) {
-                ptr_leaves[leaves_cnt++] = ralloc.ptr((new_seg->buckets[i]).slots[j].offset);
-            }
-        }
-        KVBlock *kv_block[leaves_cnt];
-        for(int i = 0; i < leaves_cnt; i ++) {
-            kv_block[i] = (KVBlock*)alloc.alloc(1);
-        }
-        int round = (leaves_cnt + kReadOroMax - 1) / kReadOroMax;
-        for(int i = 0; i < round; i ++) {
-            co_await conn->read_batch(&ptr_leaves[kReadOroMax*i], rmr.rkey, kv_block, 1, lmr->lkey, leaves_cnt);
-        }
-        // TODO：更新fp2
-    }
+    // if(local_depth - INIT_DEPTH >= 8 && (local_depth - INIT_DEPTH) % 8 == 0) {
+    //     // 这里需要再想想怎么做并发控制
+    //     // TODO：读取所有key，更新fp2，需要实现一个read_batch
+    //     uint64_t ptr_leaves[BUCKET_PER_SEGMENT*3*SLOT_PER_BUCKET];
+    //     int leaves_cnt = 0;
+    //     for(int i = 0; i < BUCKET_PER_SEGMENT * 3; i ++) {
+    //         for(int j = 0; j < SLOT_PER_BUCKET; j ++) {
+    //             ptr_leaves[leaves_cnt++] = ralloc.ptr((new_seg->buckets[i]).slots[j].offset);
+    //         }
+    //     }
+    //     KVBlock *kv_block[leaves_cnt];
+    //     for(int i = 0; i < leaves_cnt; i ++) {
+    //         kv_block[i] = (KVBlock*)alloc.alloc(1);
+    //     }
+    //     int round = (leaves_cnt + kReadOroMax - 1) / kReadOroMax;
+    //     for(int i = 0; i < round; i ++) {
+    //         co_await conn->read_batch(&ptr_leaves[kReadOroMax*i], rmr.rkey, kv_block, 1, lmr->lkey, leaves_cnt);
+    //     }
+    //     // TODO：更新fp2
+    // }
 
     co_await conn->write(new_seg_ptr, rmr.rkey, new_seg, sizeof(Segment), lmr->lkey);
 
@@ -620,6 +660,7 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
     co_return 0;
 }
 
+// 这部分后续应该是不需要了
 task<> Client::MoveData(uint64_t old_seg_ptr, uint64_t new_seg_ptr, Segment *seg, Segment *new_seg)
 {
     struct Bucket *cur_buc;
@@ -640,9 +681,15 @@ task<> Client::MoveData(uint64_t old_seg_ptr, uint64_t new_seg_ptr, Segment *seg
         {
             if (*(uint64_t *)(&cur_buc->slots[slot_idx]) == 0)
                 continue;
-            KVBlock *kv_block = (KVBlock *)alloc.alloc(cur_buc->slots[slot_idx].len);
+            KVBlock *kv_block = (KVBlock *)alloc.alloc(get_block_size(PREFECTH_FACTOR));
             co_await conn->read(ralloc.ptr(cur_buc->slots[slot_idx].offset), rmr.rkey, kv_block,
-                                cur_buc->slots[slot_idx].len, lmr->lkey);
+                                get_block_size(PREFECTH_FACTOR), lmr->lkey);
+            uint64_t kv_len = *(uint64_t*)((char*)kv_block + sizeof(uint64_t));
+            if(kv_len > PREFECTH_FACTOR) {
+                kv_block = (KVBlock*)alloc.alloc(get_block_size(kv_len));
+                co_await conn->read(ralloc.ptr(cur_buc->slots[slot_idx].offset), rmr.rkey, kv_block,
+                                get_block_size(kv_len), lmr->lkey);
+            }
 
             auto pattern = hash(kv_block->data, kv_block->k_len);
             pattern_1 = (uint64_t)pattern;
@@ -868,8 +915,15 @@ task<bool> Client::search_bucket(Slice *key, Slice *value, uintptr_t &slot_ptr, 
         {
             if (*(uint64_t*)(&buc->slots[i]) && buc->slots[i].fp == fp(pattern_1))
             {
-                KVBlock *kv_block = (KVBlock *)alloc.alloc(buc->slots[i].len);
-                co_await conn->read(ralloc.ptr(buc->slots[i].offset), rmr.rkey, kv_block, buc->slots[i].len, lmr->lkey);
+                KVBlock *kv_block = (KVBlock *)alloc.alloc(get_block_size(PREFECTH_FACTOR));
+                co_await conn->read(ralloc.ptr(buc->slots[i].offset), rmr.rkey, kv_block,
+                                    get_block_size(PREFECTH_FACTOR), lmr->lkey);
+                uint64_t kv_len = *(uint64_t*)((char*)kv_block + sizeof(uint64_t));
+                if(kv_len > PREFECTH_FACTOR) {
+                    kv_block = (KVBlock*)alloc.alloc(get_block_size(kv_len));
+                    co_await conn->read(ralloc.ptr(buc->slots[i].offset), rmr.rkey, kv_block,
+                                    get_block_size(kv_len), lmr->lkey);
+                }
                 if (memcmp(key->data, kv_block->data, key->len) == 0)
                 {
                     slot_ptr = buc_ptr + sizeof(uint64_t) + sizeof(Slot) * i;

@@ -39,6 +39,7 @@ struct Slice
     char *data;
 };
 
+// KVBlock 非定长，从MR分配，，，？？？
 struct KVBlock
 {
     uint64_t k_len;

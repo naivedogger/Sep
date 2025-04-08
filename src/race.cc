@@ -330,7 +330,7 @@ Retry:
     // 2nd RTT: Using RDMA CAS to write the pointer of the key-value block
     Slot *tmp = (Slot *)alloc.alloc(sizeof(Slot));
     tmp->fp = fp(pattern_1);
-    tmp->len = kvblock_len;
+    tmp->len = kvblock_len; // ???????? 怎么会用8bits存总大小
     tmp->offset = ralloc.offset(kvblock_ptr);
     if (!co_await conn->cas_n(slot_ptr, rmr.rkey, 0, *(uint64_t *)tmp))
     {
@@ -903,11 +903,7 @@ Retry:
     uint64_t segloc = get_seg_loc(pattern_1, dir->global_depth);
     uintptr_t segptr = dir->segs[segloc].seg_ptr;
 
-    if (dir->segs[segloc].split_lock == 1){
-        co_await sync_dir();
-        goto Retry;
-    }
-
+ 
     auto [slot_ptr, slot] = co_await search(key, &ret_value);
     Slot *tmp = (Slot *)alloc.alloc(sizeof(Slot));
     tmp->fp = fp(pattern_1);

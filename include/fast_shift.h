@@ -17,6 +17,10 @@
 
 namespace FASTSHIFT
 {
+// default number of kvblocks read in each operation
+constexpr uint64_t PREFECTH_FACTOR = 1; 
+// default kvblock size
+constexpr uint64_t KVBLOCK_SIZE = 64;   // 64 bytes
 
 // size of race segment = 8*8*(1<<6)*3 = 12KB
 constexpr uint64_t SLOT_PER_BUCKET = 8;
@@ -41,8 +45,10 @@ struct Slice
 
 struct KVBlock
 {
-    uint64_t k_len;
-    uint64_t v_len;
+    uint32_t k_len;
+    uint32_t v_len;
+    uint64_t block_len; //或者直接根据k_len和v_len计算？
+    // TODO:在这里加上块的总数量，记得修改下各种读kvblock的时候的+2*uint64_t
     char data[0]; //变长数组，用来保证KVBlock空间上的连续性，便于RDMA操作
 };
 
@@ -67,7 +73,7 @@ struct Bucket
 struct Segment
 {
     struct Bucket buckets[BUCKET_PER_SEGMENT * 3];
-    uint32_t lock;
+    // uint32_t lock;
 } __attribute__((aligned(1)));
 
 struct DirEntry
