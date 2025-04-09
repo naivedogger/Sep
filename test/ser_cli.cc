@@ -19,9 +19,9 @@
 #define ORDERED_INSERT
 Config config;
 uint64_t load_num;
-using ClientType = RACE::Client;
-using ServerType = RACE::Server;
-using Slice = RACE::Slice;
+using ClientType = SEPHASH::Client;
+using ServerType = SEPHASH::Server;
+using Slice = SEPHASH::Slice;
 
 inline uint64_t GenKey(uint64_t key)
 {
@@ -81,7 +81,19 @@ task<> run(Generator *gen, Client *cli, uint64_t cli_id, uint64_t coro_id)
     double read_frac = config.insert_frac + config.read_frac;
     double update_frac = config.insert_frac + config.read_frac + config.update_frac;
     xoshiro256pp op_chooser;
-    xoshiro256pp key_chooser;
+
+
+    // 随机负载
+    xoshiro256pp rand_key_chooser;
+
+
+    // zipfian 负载
+    std::random_device rd;  // 随机数设备
+    std::mt19937 gen_rd(rd()); // 使用 Mersenne Twister 算法的随机数生成器
+    std::uniform_real_distribution<> dis(0.0, 1.0); // 均匀分布的浮点数生成器
+    zipf99 key_chooser(10000000);
+
+    // 还有其他的选择，可以看看generator.h
     uint64_t num_op = config.num_op / (config.num_machine * config.num_cli * config.num_coro);
     uint64_t load_avr = load_num / (config.num_machine * config.num_cli * config.num_coro);
     // uint64_t load_avr = num_op;
@@ -93,16 +105,21 @@ task<> run(Generator *gen, Client *cli, uint64_t cli_id, uint64_t coro_id)
             tmp_key = GenKey(
                 load_num +
                 (config.machine_id * config.num_cli * config.num_coro + cli_id * config.num_coro + coro_id) * load_avr +
-                gen->operator()(key_chooser()));
+                gen->operator()(rand_key_chooser()));
             // log_err("run insert:%lu",tmp_key);
             co_await cli->insert(&key, &value);
         }
         else if (op_frac < read_frac)
         {
             ret_value.len = 0;
+            // 原
+            // tmp_key = GenKey(
+            //     (config.machine_id * config.num_cli * config.num_coro + cli_id * config.num_coro + coro_id) * load_avr +
+            //     gen->operator()(key_chooser()));
+            // zipf99
             tmp_key = GenKey(
                 (config.machine_id * config.num_cli * config.num_coro + cli_id * config.num_coro + coro_id) * load_avr +
-                gen->operator()(key_chooser()));
+                gen->operator()(key_chooser(dis(gen_rd))));
             // log_err("run search:%lu",tmp_key);
             co_await cli->search(&key, &ret_value);
             // if (ret_value.len != value.len || memcmp(ret_value.data, value.data, value.len) != 0)
@@ -116,9 +133,14 @@ task<> run(Generator *gen, Client *cli, uint64_t cli_id, uint64_t coro_id)
         else if (op_frac < update_frac)
         {
             // update
+            // 原
+            // tmp_key = GenKey(
+            //     (config.machine_id * config.num_cli * config.num_coro + cli_id * config.num_coro + coro_id) * load_avr +
+            //     gen->operator()(key_chooser()));
+            // zipf99
             tmp_key = GenKey(
                 (config.machine_id * config.num_cli * config.num_coro + cli_id * config.num_coro + coro_id) * load_avr +
-                gen->operator()(key_chooser()));
+                gen->operator()(key_chooser(dis(gen_rd))));
             co_await cli->update(&key, &update_value);
             // auto [slot_ptr, slot] = co_await cli->search(&key, &ret_value);
             // if (slot_ptr == 0ull)
@@ -133,9 +155,14 @@ task<> run(Generator *gen, Client *cli, uint64_t cli_id, uint64_t coro_id)
         else
         {
             // delete
+            // 原
+            // tmp_key = GenKey(
+            //     (config.machine_id * config.num_cli * config.num_coro + cli_id * config.num_coro + coro_id) * load_avr +
+            //     gen->operator()(key_chooser()));
+            // zipf99
             tmp_key = GenKey(
                 (config.machine_id * config.num_cli * config.num_coro + cli_id * config.num_coro + coro_id) * load_avr +
-                gen->operator()(key_chooser()));
+                gen->operator()(key_chooser(dis(gen_rd))));
             co_await cli->remove(&key);
             // uint64_t cnt = 0;
             // while(true){
