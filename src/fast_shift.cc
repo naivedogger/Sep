@@ -371,7 +371,7 @@ Retry:
     // 这里的slot_val不对
     if (!co_await conn->cas_n(slot_ptr, rmr.rkey, slot_val, *(uint64_t *)tmp))
     {
-        log_err("[%lu:%lu:%lu] op_key:%lu segloc:%lu fail to cas at slot_ptr:%lx",machine_id,cli_id,coro_id,this->op_key,segloc,slot_ptr);
+        log_err("[%lu:%lu:%lu] op_key:%lu slot_val:%lu fail to cas at slot_ptr:%lx",machine_id,cli_id,coro_id,this->op_key,slot_val,slot_ptr);
         goto Retry;
     }
 
