@@ -20,7 +20,7 @@ coro_num = args.coro_num
 
 # Define the connection information for each server
 servers = [
-    {'host': '192.169.1.6', 'user': 'hyy'},
+    {'host': '192.169.1.15', 'user': 'hyy'},
     #{'host': '192.168.1.52', 'user': 'xxx', 'password': 'xxx'},
     #{'host': '192.168.1.53', 'user': 'xxx', 'password': 'xxx'},
     #{'host': '192.168.1.11', 'user': 'xxx', 'password': 'xxx'},
@@ -49,7 +49,7 @@ def client_command(i):
     print(f"client: {conn.host}")
     # conn.run('killall ser_cli_var_kv', warn=True)
     # conn.run('free -h', warn=True)
-    with conn.cd('./DevSep/Sep'):
+    with conn.cd('./Sep'):
         result = conn.run('pwd')
         print(f"Current working directory on {conn.host}: {result.stdout.strip()}")
         # result = conn.run(f'rm -f insert*.txt search*.txt out.txt core') 

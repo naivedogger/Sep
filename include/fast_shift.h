@@ -26,7 +26,7 @@ constexpr uint64_t KVBLOCK_SIZE = 64;   // 64 bytes
 constexpr uint64_t SLOT_PER_BUCKET = 8;
 constexpr uint64_t BUCKET_BITS = 6;
 constexpr uint64_t BUCKET_PER_SEGMENT = 1 << (BUCKET_BITS);
-constexpr uint64_t INIT_DEPTH = 4;
+constexpr uint64_t INIT_DEPTH = 12;
 constexpr uint64_t MAX_DEPTH = 20;
 constexpr uint64_t DIR_SIZE = (1 << MAX_DEPTH);
 
@@ -124,9 +124,9 @@ class Client : public BasicDB
     task<bool> search_bucket(Slice *key, Slice *value, uintptr_t &slot_ptr, uint64_t &slot, Bucket *buc_data,
                              uintptr_t bucptr_1, uintptr_t bucptr_2, uint64_t pattern_1);
 
-    bool FindLessBucket(Bucket *buc1, Bucket *buc2);
+    bool FindLessBucket(Bucket *buc1, Bucket *buc2, uint64_t key, uint64_t local_depth);
 
-    uintptr_t FindEmptySlot(Bucket *buc, uint64_t buc_idx, uintptr_t buc_ptr);
+    uintptr_t FindEmptySlot(Bucket *buc, uint64_t buc_idx, uintptr_t buc_ptr, uint64_t key, uint64_t local_depth, uint64_t& slot_val);
 
     bool IsCorrectBucket(uint64_t segloc, Bucket *buc, uint64_t pattern);
 
