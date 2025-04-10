@@ -20,7 +20,7 @@ else
 
     for num_cli in `seq $2 $2`;do
         for num_coro in `seq 1 $3`;do
-            for load_num in 10000000;do
+            for load_num in 100000;do
                 echo "num_cli" $num_cli "num_coro" $num_coro "load_num" $load_num
                 # ./ser_cli_var_kv \
                 ./ser_cli \

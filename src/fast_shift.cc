@@ -15,7 +15,7 @@ inline __attribute__((always_inline)) uint64_t get_shift_bits(uint64_t pattern, 
 
 inline __attribute__((always_inline)) uint64_t get_mask_bits(uint64_t pattern, uint64_t local_depth)
 {
-    uint64_t mask_bits = (local_depth - INIT_DEPTH) % 8 + 1;
+    uint64_t mask_bits = (local_depth - INIT_DEPTH) % 8;
     return mask_bits;
 }
 
@@ -70,10 +70,16 @@ inline __attribute__((always_inline)) bool check_suffix(uint64_t suffix, uint64_
 
 inline __attribute__((always_inline)) bool check_empty(uint64_t pattern, uint64_t key, uint64_t local_depth)
 {
+    if((local_depth - INIT_DEPTH) % 8 == 0)
+        return false;
     uint64_t shift_bits = get_shift_bits(pattern, local_depth);
     uint64_t mask_bits = get_mask_bits(pattern, local_depth);
     // TODO：再想想？应该只要有 1 位不一样就说明是空的
-    return ((pattern >> shift_bits) ^ (key >> shift_bits)) & ((1 << mask_bits) - 1);
+    if(((pattern >> shift_bits) ^ (key >> shift_bits)) & ((1 << mask_bits) - 1)) {
+        log_err("check_empty: %lu", pattern);
+        return true;
+    }
+    return false;
 }
 
 void PrintDir(Directory *dir)
@@ -358,7 +364,7 @@ Retry:
 
     if (slot_ptr == 0ul)
     {
-        // log_err("[%lu:%lu]%s split for key:%lu with local_depth:%u global_depth:%lu at segloc:%lx",cli_id,coro_id,(buc_data->local_depth==dir->global_depth)?"gloabl":"local",*(uint64_t*)key->data,buc_data->local_depth,dir->global_depth,segloc);
+        log_err("[%lu:%lu]%s split for key:%lu with local_depth:%u global_depth:%lu at segloc:%lx",cli_id,coro_id,(buc_data->local_depth==dir->global_depth)?"gloabl":"local",*(uint64_t*)key->data,buc_data->local_depth,dir->global_depth,segloc);
         co_await Split(segloc, segptr, buc->local_depth, buc->local_depth == dir->global_depth);
         goto Retry;
     }
@@ -371,7 +377,7 @@ Retry:
     // 这里的slot_val不对
     if (!co_await conn->cas_n(slot_ptr, rmr.rkey, slot_val, *(uint64_t *)tmp))
     {
-        log_err("[%lu:%lu:%lu] op_key:%lu slot_val:%lu fail to cas at slot_ptr:%lx",machine_id,cli_id,coro_id,this->op_key,slot_val,slot_ptr);
+        // log_err("[%lu:%lu:%lu] op_key:%lu slot_val:%lu fail to cas at slot_ptr:%lx",machine_id,cli_id,coro_id,this->op_key,slot_val,slot_ptr);
         goto Retry;
     }
 
@@ -437,9 +443,9 @@ bool Client::FindLessBucket(Bucket *buc1, Bucket *buc2, uint64_t key, uint64_t l
     {
         for (uint64_t i = 0; i < SLOT_PER_BUCKET; i++)
         {
-            if (*(uint64_t *)&tmp_1->slots[i] || check_empty(*(uint64_t *)&tmp_1->slots[i],key,local_depth))
+            if (*(uint64_t *)&tmp_1->slots[i] && !check_empty(*(uint64_t *)&tmp_1->slots[i],key,local_depth))
                 buc1_tot++;
-            if (*(uint64_t *)&tmp_2->slots[i] || check_empty(*(uint64_t *)&tmp_2->slots[i],key,local_depth))
+            if (*(uint64_t *)&tmp_2->slots[i] && !check_empty(*(uint64_t *)&tmp_2->slots[i],key,local_depth))
                 buc2_tot++;
         }
         tmp_1++;
