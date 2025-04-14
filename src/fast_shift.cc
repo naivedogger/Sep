@@ -355,12 +355,13 @@ Retry:
         goto Retry;
     }
 
-    bool buc_flag = FindLessBucket(buc_data, buc_data + 2, pattern, buc_data->local_depth);
+    bool buc_flag = FindLessBucket(buc_data, buc_data + 2, pattern_1, pattern_2, buc_data->local_depth);
     uint64_t buc_idx = buc_flag ? bucidx_1 : bucidx_2;
     Bucket *buc = buc_flag ? buc_data : buc_data + 2;
     uintptr_t buc_ptr = buc_flag ? bucptr_1 : bucptr_2;
     uint64_t slot_val = 0;
-    uintptr_t slot_ptr = FindEmptySlot(buc, buc_idx, buc_ptr, pattern, buc_data->local_depth, slot_val);
+    uint64_t pattern_less_bucket = buc_flag ? pattern_1 : pattern_2;
+    uintptr_t slot_ptr = FindEmptySlot(buc, buc_idx, buc_ptr, pattern_less_bucket, buc_data->local_depth, slot_val);
 
     if (slot_ptr == 0ul)
     {
@@ -374,10 +375,14 @@ Retry:
     tmp->fp = fp(pattern_1);
     tmp->fp2 = fp2(pattern_1, buc_data->local_depth);
     tmp->offset = ralloc.offset(kvblock_ptr);
-    // 这里的slot_val不对
+    uint64_t pre_val = slot_val;
+    // 这里的slot_val不对，真是见鬼了，重读以后是0，但是cas_n(0)又失败
     if (!co_await conn->cas_n(slot_ptr, rmr.rkey, slot_val, *(uint64_t *)tmp))
     {
-        // log_err("[%lu:%lu:%lu] op_key:%lu slot_val:%lu fail to cas at slot_ptr:%lx",machine_id,cli_id,coro_id,this->op_key,slot_val,slot_ptr);
+        Slot* slot_data = (Slot*) alloc.alloc(sizeof(Slot));
+        auto rslot = conn->read(slot_ptr, rmr.rkey, slot_data, sizeof(Slot), lmr->lkey);
+        co_await std::move(rslot);
+        log_err("[%lu:%lu:%lu] op_key:%lu slot_val:%lu fail to cas at slot_ptr:%lx, pre_val:%lu",machine_id,cli_id,coro_id,this->op_key,*(uint64_t*)slot_data,slot_ptr,pre_val);
         goto Retry;
     }
 
@@ -434,7 +439,7 @@ task<> Client::sync_dir()
                         (1 << dir->global_depth) * sizeof(DirEntry), lmr->lkey);
 }
 
-bool Client::FindLessBucket(Bucket *buc1, Bucket *buc2, uint64_t key, uint64_t local_depth)
+bool Client::FindLessBucket(Bucket *buc1, Bucket *buc2, uint64_t key_1, uint64_t key_2, uint64_t local_depth)
 {
     int buc1_tot = 0;
     int buc2_tot = 0;
@@ -443,9 +448,9 @@ bool Client::FindLessBucket(Bucket *buc1, Bucket *buc2, uint64_t key, uint64_t l
     {
         for (uint64_t i = 0; i < SLOT_PER_BUCKET; i++)
         {
-            if (*(uint64_t *)&tmp_1->slots[i] && !check_empty(*(uint64_t *)&tmp_1->slots[i],key,local_depth))
+            if (*(uint64_t *)&tmp_1->slots[i] && !check_empty(*(uint64_t *)&tmp_1->slots[i],key_1,local_depth))
                 buc1_tot++;
-            if (*(uint64_t *)&tmp_2->slots[i] && !check_empty(*(uint64_t *)&tmp_2->slots[i],key,local_depth))
+            if (*(uint64_t *)&tmp_2->slots[i] && !check_empty(*(uint64_t *)&tmp_2->slots[i],key_2,local_depth))
                 buc2_tot++;
         }
         tmp_1++;

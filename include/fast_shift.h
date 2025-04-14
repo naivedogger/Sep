@@ -124,7 +124,7 @@ class Client : public BasicDB
     task<bool> search_bucket(Slice *key, Slice *value, uintptr_t &slot_ptr, uint64_t &slot, Bucket *buc_data,
                              uintptr_t bucptr_1, uintptr_t bucptr_2, uint64_t pattern_1);
 
-    bool FindLessBucket(Bucket *buc1, Bucket *buc2, uint64_t key, uint64_t local_depth);
+    bool FindLessBucket(Bucket *buc1, Bucket *buc2, uint64_t key_1, uint64_t key_2, uint64_t local_depth);
 
     uintptr_t FindEmptySlot(Bucket *buc, uint64_t buc_idx, uintptr_t buc_ptr, uint64_t key, uint64_t local_depth, uint64_t& slot_val);
 
