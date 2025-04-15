@@ -13,7 +13,7 @@
 #include <tuple>
 #include <vector>
 
-#define WO_WAIT_WRITE
+// #define WO_WAIT_WRITE
 
 namespace FASTSHIFT
 {
@@ -58,6 +58,8 @@ requires Alloc_Trait<Alloc, uint64_t> KVBlock *InitKVBlock(Slice *key, Slice *va
     KVBlock *kv_block = (KVBlock *)alloc->alloc(2 * sizeof(uint64_t) + key->len + value->len);
     kv_block->k_len = key->len;
     kv_block->v_len = value->len;
+    // TODO: 支持可变的block数量
+    kv_block->block_len = 1;
     memcpy(kv_block->data, key->data, key->len);
     memcpy(kv_block->data + key->len, value->data, value->len);
     return kv_block;

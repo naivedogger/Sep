@@ -299,8 +299,23 @@ void print_buc(Bucket* buc){
     }
 }
 
+int cnt = 0;
+
 task<> Client::insert(Slice *key, Slice *value)
 {
+    cnt ++;
+    // int miss_match = 0;
+    // if(cnt == 59482)
+    // for(int i = 0; i < 1 << INIT_DEPTH; i ++) {
+    //     uintptr_t segptr = dir->segs[i].seg_ptr;
+    //     Bucket *buc_data = (Bucket *)alloc.alloc(4ul * sizeof(Bucket));
+    //     uintptr_t bucptr_1, bucptr_2;
+    //     bucptr_1 = segptr + get_buc_off(64);
+    //     auto rbuc1 = conn->read(bucptr_1, rmr.rkey, buc_data, 2 * sizeof(Bucket), lmr->lkey);
+    //     co_await std::move(rbuc1);
+    //     if(buc_data->suffix != i)
+    //         miss_match ++;
+    // }
     perf.start_perf();
     sum_cost.start_insert();
     alloc.ReSet(sizeof(Directory));
@@ -347,6 +362,7 @@ Retry:
     }
 #endif
 
+    assert(segloc == buc_data->suffix);
     if (dir->segs[segloc].local_depth != buc_data->local_depth ||
         dir->segs[segloc].local_depth != (buc_data + 2)->local_depth)
     {
@@ -376,13 +392,11 @@ Retry:
     tmp->fp2 = fp2(pattern_1, buc_data->local_depth);
     tmp->offset = ralloc.offset(kvblock_ptr);
     uint64_t pre_val = slot_val;
-    // 这里的slot_val不对，真是见鬼了，重读以后是0，但是cas_n(0)又失败
     if (!co_await conn->cas_n(slot_ptr, rmr.rkey, slot_val, *(uint64_t *)tmp))
     {
-        Slot* slot_data = (Slot*) alloc.alloc(sizeof(Slot));
-        auto rslot = conn->read(slot_ptr, rmr.rkey, slot_data, sizeof(Slot), lmr->lkey);
-        co_await std::move(rslot);
-        log_err("[%lu:%lu:%lu] op_key:%lu slot_val:%lu fail to cas at slot_ptr:%lx, pre_val:%lu",machine_id,cli_id,coro_id,this->op_key,*(uint64_t*)slot_data,slot_ptr,pre_val);
+        // Slot* slot_data = (Slot*) alloc.alloc(sizeof(Slot));
+        // co_await conn->read(slot_ptr, rmr.rkey, slot_data, sizeof(Slot), lmr->lkey);
+        // log_err("[%lu:%lu:%lu] op_key:%lu slot_val:%lu fail to cas at slot_ptr:%lx, pre_val:%lx",machine_id,cli_id,coro_id,this->op_key,*(uint64_t*)slot_data,slot_ptr,pre_val);
         goto Retry;
     }
 
@@ -392,6 +406,8 @@ Retry:
     co_await std::move(rbuc4);
     co_await std::move(rbuc3);
 
+    // 看下这里的bucket有没有写成功
+
     // Check Dupulicate-key
     for (uint64_t round = 0; round < 4; round++)
     {
@@ -399,14 +415,18 @@ Retry:
         buc_ptr = (round / 2 ? bucptr_2 : bucptr_1) + (round % 2 ? sizeof(Bucket) : 0);
         for (uint64_t i = 0; i < SLOT_PER_BUCKET; i++)
         {
-            if (buc->slots[i].fp == tmp->fp && buc->slots[i].fp2 == tmp->fp2 && buc->slots[i].offset != tmp->offset)
+            // TODO: 修改其他的地方的读取key的逻辑！！！！
+            if (buc->slots[i].offset != 0 && buc->slots[i].fp == tmp->fp && buc->slots[i].fp2 == tmp->fp2 && buc->slots[i].offset != tmp->offset)
             {
                 char *tmp_key = (char *)alloc.alloc(get_block_size(PREFECTH_FACTOR));
                 co_await conn->read(ralloc.ptr(buc->slots[i].offset), rmr.rkey, tmp_key, get_block_size(PREFECTH_FACTOR), lmr->lkey);
                 // TODO: check the actual len specified in block #1
                 uint64_t kv_len = *(uint64_t*)(tmp_key + sizeof(uint64_t));
+                assert(kv_len == 1);
                 if(kv_len > PREFECTH_FACTOR) {
                     tmp_key = (char*)alloc.alloc(get_block_size(kv_len));
+                    // TODO: 支持变长后把这里删除掉
+                    assert(0);
                     co_await conn->read(ralloc.ptr(buc->slots[i].offset), rmr.rkey, tmp_key, get_block_size(kv_len), lmr->lkey);
                 }
                 if (memcmp(key->data, tmp_key + sizeof(uint64_t) * 2, key->len) == 0)
@@ -430,6 +450,7 @@ Retry:
     perf.push_insert();
     sum_cost.end_insert();
     sum_cost.push_retry_cnt(retry_cnt);
+
 }
 
 task<> Client::sync_dir()
@@ -953,6 +974,7 @@ task<bool> Client::search_bucket(Slice *key, Slice *value, uintptr_t &slot_ptr, 
         buc_ptr = (round / 2 ? bucptr_2 : bucptr_1) + (round % 2 ? sizeof(Bucket) : 0);
         for (uint64_t i = 0; i < SLOT_PER_BUCKET; i++)
         {
+            // search_bucket 有判空逻辑
             if (*(uint64_t*)(&buc->slots[i]) && buc->slots[i].fp == fp(pattern_1))
             {
                 KVBlock *kv_block = (KVBlock *)alloc.alloc(get_block_size(PREFECTH_FACTOR));
@@ -960,6 +982,7 @@ task<bool> Client::search_bucket(Slice *key, Slice *value, uintptr_t &slot_ptr, 
                                     get_block_size(PREFECTH_FACTOR), lmr->lkey);
                 uint64_t kv_len = *(uint64_t*)((char*)kv_block + sizeof(uint64_t));
                 if(kv_len > PREFECTH_FACTOR) {
+                    assert(0);
                     kv_block = (KVBlock*)alloc.alloc(get_block_size(kv_len));
                     co_await conn->read(ralloc.ptr(buc->slots[i].offset), rmr.rkey, kv_block,
                                     get_block_size(kv_len), lmr->lkey);

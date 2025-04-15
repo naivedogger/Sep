@@ -197,7 +197,7 @@ int main(int argc, char *argv[])
     }
     else
     {
-        uint64_t cbuf_size = (1ul << 20) * 250;
+        uint64_t cbuf_size = (1ul << 20) * 1024;
         char *mem_buf = (char *)malloc(cbuf_size * (config.num_cli * config.num_coro + 1));
         // rdma_dev dev("mlx5_1", 1, config.gid_idx);
         rdma_dev dev("mlx5_0", 1, config.gid_idx);
