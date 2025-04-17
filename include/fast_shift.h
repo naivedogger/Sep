@@ -13,7 +13,7 @@
 #include <tuple>
 #include <vector>
 
-// #define WO_WAIT_WRITE
+#define WO_WAIT_WRITE
 
 namespace FASTSHIFT
 {

@@ -735,7 +735,7 @@ task<std::tuple<uintptr_t, uint64_t>> Client::search(Slice *key, Slice *value)
         sum_cost.push_level_cnt(1);
         co_return std::make_tuple(slot_ptr, slot);
     }
-    // log_err("[%lu:%lu]No match key :%lu", cli_id, coro_id, *(uint64_t *)key->data);
+    log_err("[%lu:%lu]No match key :%lu", cli_id, coro_id, *(uint64_t *)key->data);
     perf.push_search();
     sum_cost.push_level_cnt(1);
     co_return std::make_tuple(0ull, 0);

@@ -76,7 +76,7 @@ inline __attribute__((always_inline)) bool check_empty(uint64_t pattern, uint64_
     uint64_t mask_bits = get_mask_bits(pattern, local_depth);
     // TODO：再想想？应该只要有 1 位不一样就说明是空的
     if(((pattern >> shift_bits) ^ (key >> shift_bits)) & ((1 << mask_bits) - 1)) {
-        log_err("check_empty: %lu", pattern);
+        // log_err("check_empty: %lu", pattern);
         return true;
     }
     return false;
@@ -325,7 +325,9 @@ task<> Client::insert(Slice *key, Slice *value)
     pattern_2 = (uint64_t)(pattern >> 64);
     KVBlock *kv_block = InitKVBlock(key, value, &alloc);
     this->op_key = *(uint64_t *)key->data;
-    uint64_t kvblock_len = key->len + value->len + sizeof(uint64_t) * 2;
+    // uint64_t kvblock_len = key->len + value->len + sizeof(uint64_t) * 2;
+    // TODO: 先按照64算，之后再支持变长
+    uint64_t kvblock_len = 64;
     uint64_t kvblock_ptr = ralloc.alloc(kvblock_len);
 #ifdef WO_WAIT_WRITE
     wowait_conn->pure_write(kvblock_ptr, rmr.rkey, kv_block, kvblock_len, lmr->lkey);
@@ -362,7 +364,7 @@ Retry:
     }
 #endif
 
-    assert(segloc == buc_data->suffix);
+    // assert(segloc == buc_data->suffix);
     if (dir->segs[segloc].local_depth != buc_data->local_depth ||
         dir->segs[segloc].local_depth != (buc_data + 2)->local_depth)
     {
@@ -381,7 +383,7 @@ Retry:
 
     if (slot_ptr == 0ul)
     {
-        log_err("[%lu:%lu]%s split for key:%lu with local_depth:%u global_depth:%lu at segloc:%lx",cli_id,coro_id,(buc_data->local_depth==dir->global_depth)?"gloabl":"local",*(uint64_t*)key->data,buc_data->local_depth,dir->global_depth,segloc);
+        // log_err("[%lu:%lu]%s split for key:%lu with local_depth:%u global_depth:%lu at segloc:%lx",cli_id,coro_id,(buc_data->local_depth==dir->global_depth)?"gloabl":"local",*(uint64_t*)key->data,buc_data->local_depth,dir->global_depth,segloc);
         co_await Split(segloc, segptr, buc->local_depth, buc->local_depth == dir->global_depth);
         goto Retry;
     }
@@ -498,7 +500,7 @@ uintptr_t Client::FindEmptySlot(Bucket *buc, uint64_t buc_idx, uintptr_t buc_ptr
     {
         if (*(uint64_t *)(&over_buc->slots[i]) == 0|| check_empty(*(uint64_t *)(&main_buc->slots[i]), key, local_depth))
         {
-            slot_val = *(uint64_t *)(&main_buc->slots[i]);
+            slot_val = *(uint64_t *)(&over_buc->slots[i]);
             return over_buc_ptr + sizeof(uint64_t) * (i + 1);
         }
     }
@@ -519,7 +521,7 @@ bool Client::IsCorrectBucket(uint64_t segloc, Bucket *buc, uint64_t pattern)
 task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_depth, bool global_flag)
 {
     sum_cost.start_split();
-    log_err("[%lu:%lu:%lu] %lu split local_depth: %lu",machine_id,cli_id,coro_id,this->op_key,local_depth);
+    // log_err("[%lu:%lu:%lu] %lu split local_depth: %lu",machine_id,cli_id,coro_id,this->op_key,local_depth);
     if (local_depth == MAX_DEPTH)
     {
         log_err("Exceed MAX_DEPTH");
@@ -825,8 +827,25 @@ task<> Client::UnlockDir()
 task<std::tuple<uintptr_t, uint64_t>> Client::search(Slice *key, Slice *value)
 {
     perf.start_perf();
-Retry:
+Retry_search:
+    // 每次重试的时候，会回到头部？？？？
     alloc.ReSet(sizeof(Directory));
+
+    // check buckets
+    int miss_match = 0;
+    // if(cnt == 59482)
+    // for(int i = 0; i < 1 << INIT_DEPTH; i ++) {
+    //     alloc.ReSet(sizeof(Directory));
+    //     uintptr_t segptr = dir->segs[i].seg_ptr;
+    //     Bucket *buc_data = (Bucket *)alloc.alloc(4ul * sizeof(Bucket));
+    //     buc_data->slots[2].fp = 99;
+    //     uintptr_t bucptr_1, bucptr_2;
+    //     bucptr_1 = segptr + get_buc_off(0);
+    //     auto rbuc1 = conn->read(bucptr_1, rmr.rkey, buc_data, 2 * sizeof(Bucket), lmr->lkey);
+    //     co_await std::move(rbuc1);
+    //     if(buc_data->suffix != i)
+    //         miss_match ++;
+    // }
 
     // 1st RTT: Using RDMA doorbell batching to fetch two combined buckets
     uint64_t pattern_1, pattern_2;
@@ -851,23 +870,27 @@ Retry:
     bucidx_2 = get_buc_loc(pattern_2);
     bucptr_1 = segptr + get_buc_off(bucidx_1);
     bucptr_2 = segptr + get_buc_off(bucidx_2);
+    // 读过来的bucket suffix和seg对不上
     Bucket *buc_data = (Bucket *)alloc.alloc(4ul * sizeof(Bucket));
     auto rbuc1 = conn->read(bucptr_1, rmr.rkey, buc_data, 2 * sizeof(Bucket), lmr->lkey);
     auto rbuc2 = conn->read(bucptr_2, rmr.rkey, buc_data + 2, 2 * sizeof(Bucket), lmr->lkey);
     co_await std::move(rbuc2);
     co_await std::move(rbuc1);
+    // std::move(rbuc2);
+    // std::move(rbuc1);
+    // usleep(100);
     // 加上一个阻塞的逻辑
-    if (dir->segs[segloc].local_depth != buc_data->local_depth ||
-        dir->segs[segloc].local_depth != (buc_data + 2)->local_depth)
-    {
-        co_await sync_dir();
-        log_err("[%lu:%lu:%lu] op_key:%lu segloc:%lu buc_data->local_depth:%u (buc_data + 2)->local_depth:%u dir->segs[segloc].local_depth:%lu",machine_id,cli_id,coro_id,this->op_key,segloc,buc_data->local_depth,(buc_data + 2)->local_depth,dir->segs[segloc].local_depth);
-        goto Retry;
-    }
+    // if (dir->segs[segloc].local_depth != buc_data->local_depth ||
+    //     dir->segs[segloc].local_depth != (buc_data + 2)->local_depth)
+    // {
+    //     co_await sync_dir();
+    //     log_err("[%lu:%lu:%lu] op_key:%lu segloc:%lu buc_data->local_depth:%u (buc_data + 2)->local_depth:%u dir->segs[segloc].local_depth:%lu",machine_id,cli_id,coro_id,this->op_key,segloc,buc_data->local_depth,(buc_data + 2)->local_depth,dir->segs[segloc].local_depth);
+    //     goto Retry;
+    // }
     if (IsCorrectBucket(segloc, buc_data, pattern_1) == false ||
         IsCorrectBucket(segloc, buc_data + 2, pattern_2) == false)
     {
-        // log_err("Wrong Bucket After Load");
+        log_err("Wrong Bucket After Load");
         auto slot_info = co_await search_on_resize(key, value);
         perf.push_search();
         co_return slot_info;
@@ -881,7 +904,7 @@ Retry:
         sum_cost.push_level_cnt(1);
         co_return std::make_tuple(slot_ptr, slot);
     }
-    // log_err("[%lu:%lu]No match key :%lu", cli_id, coro_id, *(uint64_t *)key->data);
+    log_err("[%lu:%lu]No match key :%lu", cli_id, coro_id, *(uint64_t *)key->data);
     perf.push_search();
     sum_cost.push_level_cnt(1);
     co_return std::make_tuple(0ull, 0);
@@ -977,22 +1000,22 @@ task<bool> Client::search_bucket(Slice *key, Slice *value, uintptr_t &slot_ptr, 
             // search_bucket 有判空逻辑
             if (*(uint64_t*)(&buc->slots[i]) && buc->slots[i].fp == fp(pattern_1))
             {
-                KVBlock *kv_block = (KVBlock *)alloc.alloc(get_block_size(PREFECTH_FACTOR));
+                char *kv_block = (char *)alloc.alloc(get_block_size(PREFECTH_FACTOR));
                 co_await conn->read(ralloc.ptr(buc->slots[i].offset), rmr.rkey, kv_block,
                                     get_block_size(PREFECTH_FACTOR), lmr->lkey);
-                uint64_t kv_len = *(uint64_t*)((char*)kv_block + sizeof(uint64_t));
+                uint64_t kv_len = *(uint64_t*)(kv_block + sizeof(uint64_t));
                 if(kv_len > PREFECTH_FACTOR) {
                     assert(0);
-                    kv_block = (KVBlock*)alloc.alloc(get_block_size(kv_len));
+                    kv_block = (char*)alloc.alloc(get_block_size(kv_len));
                     co_await conn->read(ralloc.ptr(buc->slots[i].offset), rmr.rkey, kv_block,
                                     get_block_size(kv_len), lmr->lkey);
                 }
-                if (memcmp(key->data, kv_block->data, key->len) == 0)
+                if (memcmp(key->data, kv_block + sizeof(uint64_t) * 2, key->len) == 0)
                 {
                     slot_ptr = buc_ptr + sizeof(uint64_t) + sizeof(Slot) * i;
                     slot = *(uint64_t *)&(buc->slots[i]);
-                    value->len = kv_block->v_len;
-                    memcpy(value->data, kv_block->data + kv_block->k_len, value->len);
+                    value->len = ((KVBlock*)kv_block)->v_len;
+                    memcpy(value->data, ((KVBlock*)kv_block)->data + ((KVBlock*)kv_block)->k_len, value->len);
                     co_return true;
                 }
             }
