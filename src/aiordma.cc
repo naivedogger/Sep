@@ -484,7 +484,7 @@ void rdma_worker::worker_loop()
             auto cor = coros + wc.wr_id;
             if (wc.status != IBV_WC_SUCCESS)
             {
-                log_warn("got bad completion with status: 0x%x, vendor syndrome: 0x%x", wc.status, wc.vendor_err);
+                log_err("got bad completion with status: 0x%x, vendor syndrome: 0x%x", wc.status, wc.vendor_err);
                 cor->coro_state |= coro_state_error;
             }
             if (cor->coro_state & coro_state_inited)

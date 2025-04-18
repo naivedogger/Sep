@@ -3,7 +3,7 @@
 namespace FASTSHIFT
 {
 
-inline __attribute__((always_inline)) uint64_t get_shift_bits(uint64_t pattern, uint64_t local_depth)
+inline __attribute__((always_inline)) uint64_t get_shift_bits(uint64_t local_depth)
 {
     if(local_depth == INIT_DEPTH)
         return INIT_DEPTH;
@@ -13,7 +13,7 @@ inline __attribute__((always_inline)) uint64_t get_shift_bits(uint64_t pattern, 
     return shift_bits;
 }
 
-inline __attribute__((always_inline)) uint64_t get_mask_bits(uint64_t pattern, uint64_t local_depth)
+inline __attribute__((always_inline)) uint64_t get_mask_bits(uint64_t local_depth)
 {
     uint64_t mask_bits = (local_depth - INIT_DEPTH) % 8;
     return mask_bits;
@@ -31,7 +31,7 @@ inline __attribute__((always_inline)) uint64_t fp(uint64_t pattern)
 
 inline __attribute__((always_inline)) uint64_t fp2(uint64_t pattern, uint64_t local_depth)
 {
-    uint64_t shift_bits = get_shift_bits(pattern, local_depth);
+    uint64_t shift_bits = get_shift_bits(local_depth);
     return ((uint64_t)((pattern)>>shift_bits)&((1<<8)-1));
 }
 
@@ -68,15 +68,18 @@ inline __attribute__((always_inline)) bool check_suffix(uint64_t suffix, uint64_
     return ((suffix & ((1 << local_depth) - 1)) ^ (seg_loc & ((1 << local_depth) - 1)));
 }
 
-inline __attribute__((always_inline)) bool check_empty(uint64_t pattern, uint64_t key, uint64_t local_depth)
+int empty_cnt = 0;
+
+inline __attribute__((always_inline)) bool check_empty(uint8_t fp2, uint64_t key, uint64_t local_depth)
 {
     if((local_depth - INIT_DEPTH) % 8 == 0)
         return false;
-    uint64_t shift_bits = get_shift_bits(pattern, local_depth);
-    uint64_t mask_bits = get_mask_bits(pattern, local_depth);
+    uint64_t shift_bits = get_shift_bits(local_depth);
+    uint64_t mask_bits = get_mask_bits(local_depth);
+    assert(shift_bits == INIT_DEPTH);
     // TODO：再想想？应该只要有 1 位不一样就说明是空的
-    if(((pattern >> shift_bits) ^ (key >> shift_bits)) & ((1 << mask_bits) - 1)) {
-        // log_err("check_empty: %lu", pattern);
+    if((fp2 ^ (key >> shift_bits)) & ((1 << mask_bits) - 1)) {
+        // log_err("check_empty: pattern:%lx key:%lx", (pattern >> shift_bits) & ((1 << 8) - 1), (key >> shift_bits) & ((1 << 8) - 1));
         return true;
     }
     return false;
@@ -378,8 +381,8 @@ Retry:
     Bucket *buc = buc_flag ? buc_data : buc_data + 2;
     uintptr_t buc_ptr = buc_flag ? bucptr_1 : bucptr_2;
     uint64_t slot_val = 0;
-    uint64_t pattern_less_bucket = buc_flag ? pattern_1 : pattern_2;
-    uintptr_t slot_ptr = FindEmptySlot(buc, buc_idx, buc_ptr, pattern_less_bucket, buc_data->local_depth, slot_val);
+    // uint64_t pattern_less_bucket = buc_flag ? pattern_1 : pattern_2;
+    uintptr_t slot_ptr = FindEmptySlot(buc, buc_idx, buc_ptr, pattern_1, buc_data->local_depth, slot_val);
 
     if (slot_ptr == 0ul)
     {
@@ -400,6 +403,10 @@ Retry:
         // co_await conn->read(slot_ptr, rmr.rkey, slot_data, sizeof(Slot), lmr->lkey);
         // log_err("[%lu:%lu:%lu] op_key:%lu slot_val:%lu fail to cas at slot_ptr:%lx, pre_val:%lx",machine_id,cli_id,coro_id,this->op_key,*(uint64_t*)slot_data,slot_ptr,pre_val);
         goto Retry;
+    }
+
+    if(pre_val != 0) {
+        empty_cnt ++;
     }
 
     // 3rd RTT: Re-reading two combined buckets to remove duplicate keys
@@ -441,9 +448,10 @@ Retry:
     }
 
     buc = buc_flag ? buc_data : buc_data + 2;
+    // 可以在最后检查是不是正确的bucket，决定要不要重试insert
     if (IsCorrectBucket(segloc, buc, pattern_1) == false)
     {
-        // log_err("[%lu:%lu:%lu] op_key:%lu segloc:%lu wrong bucket",machine_id,cli_id,coro_id,this->op_key,segloc);
+        log_err("[%lu:%lu:%lu] op_key:%lu segloc:%lu wrong bucket",machine_id,cli_id,coro_id,this->op_key,segloc);
         co_await conn->cas_n(slot_ptr, rmr.rkey, *(uint64_t *)tmp, 0);
         co_await sync_dir();
         goto Retry;
@@ -464,6 +472,7 @@ task<> Client::sync_dir()
 
 bool Client::FindLessBucket(Bucket *buc1, Bucket *buc2, uint64_t key_1, uint64_t key_2, uint64_t local_depth)
 {
+    // 应该不需要key_2，pattern_2只是用来计算第二个buc的位置，实际上slot里面的内容是通过pattern_1计算的
     int buc1_tot = 0;
     int buc2_tot = 0;
     Bucket *tmp_1 = buc1, *tmp_2 = buc2;
@@ -471,9 +480,9 @@ bool Client::FindLessBucket(Bucket *buc1, Bucket *buc2, uint64_t key_1, uint64_t
     {
         for (uint64_t i = 0; i < SLOT_PER_BUCKET; i++)
         {
-            if (*(uint64_t *)&tmp_1->slots[i] && !check_empty(*(uint64_t *)&tmp_1->slots[i],key_1,local_depth))
+            if (*(uint64_t *)&tmp_1->slots[i] && !check_empty((tmp_1->slots[i]).fp2,key_1,local_depth))
                 buc1_tot++;
-            if (*(uint64_t *)&tmp_2->slots[i] && !check_empty(*(uint64_t *)&tmp_2->slots[i],key_2,local_depth))
+            if (*(uint64_t *)&tmp_2->slots[i] && !check_empty((tmp_2->slots[i]).fp2,key_1,local_depth))
                 buc2_tot++;
         }
         tmp_1++;
@@ -490,7 +499,7 @@ uintptr_t Client::FindEmptySlot(Bucket *buc, uint64_t buc_idx, uintptr_t buc_ptr
     uint64_t over_buc_ptr = get_over_ptr(buc_idx, buc_ptr);
     for (uint64_t i = 0; i < SLOT_PER_BUCKET; i++)
     {
-        if (*(uint64_t *)(&main_buc->slots[i]) == 0 || check_empty(*(uint64_t *)(&main_buc->slots[i]), key, local_depth))
+        if (*(uint64_t *)(&main_buc->slots[i]) == 0 || check_empty(main_buc->slots[i].fp2, key, local_depth))
         {
             slot_val = *(uint64_t *)(&main_buc->slots[i]);
             return main_buc_ptr + sizeof(uint64_t) * (i + 1);
@@ -498,7 +507,7 @@ uintptr_t Client::FindEmptySlot(Bucket *buc, uint64_t buc_idx, uintptr_t buc_ptr
     }
     for (uint64_t i = 0; i < SLOT_PER_BUCKET; i++)
     {
-        if (*(uint64_t *)(&over_buc->slots[i]) == 0|| check_empty(*(uint64_t *)(&main_buc->slots[i]), key, local_depth))
+        if (*(uint64_t *)(&over_buc->slots[i]) == 0|| check_empty(over_buc->slots[i].fp2, key, local_depth))
         {
             slot_val = *(uint64_t *)(&over_buc->slots[i]);
             return over_buc_ptr + sizeof(uint64_t) * (i + 1);
@@ -578,7 +587,7 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
 
         // Update local_depth&suffix
         cur_buc->local_depth = local_depth + 1;
-        co_await conn->write(buc_ptr, rmr.rkey, cur_buc, sizeof(uint64_t), lmr->lkey);
+        co_await conn->write(buc_ptr, rmr.rkey, cur_buc, sizeof(uint32_t), lmr->lkey);
     }
 
     // 读取旧的segment
@@ -824,15 +833,19 @@ task<> Client::UnlockDir()
     co_await conn->cas_n(rmr.raddr, rmr.rkey, 1, 0);
 }
 
+uint64_t miss_count = 0;
+int read_cnt = 0;
+
 task<std::tuple<uintptr_t, uint64_t>> Client::search(Slice *key, Slice *value)
 {
     perf.start_perf();
+    read_cnt ++;
 Retry_search:
     // 每次重试的时候，会回到头部？？？？
     alloc.ReSet(sizeof(Directory));
 
     // check buckets
-    int miss_match = 0;
+    // int miss_match = 0;
     // if(cnt == 59482)
     // for(int i = 0; i < 1 << INIT_DEPTH; i ++) {
     //     alloc.ReSet(sizeof(Directory));
@@ -899,12 +912,17 @@ Retry_search:
     // Search the slots of two buckets for the key
     uintptr_t slot_ptr;
     uint64_t slot;
+    char key_fp = fp(pattern_1);
     if (co_await search_bucket(key, value, slot_ptr, slot, buc_data, bucptr_1, bucptr_2, pattern_1)){
         perf.push_search();
         sum_cost.push_level_cnt(1);
         co_return std::make_tuple(slot_ptr, slot);
     }
     log_err("[%lu:%lu]No match key :%lu", cli_id, coro_id, *(uint64_t *)key->data);
+    miss_count ++;
+    if(read_cnt == 980000) {
+        log_err("No match cnt :%lu, slots overwriten :%lu", miss_count, empty_cnt);
+    }
     perf.push_search();
     sum_cost.push_level_cnt(1);
     co_return std::make_tuple(0ull, 0);

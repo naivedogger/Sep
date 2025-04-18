@@ -26,8 +26,8 @@ constexpr uint64_t KVBLOCK_SIZE = 64;   // 64 bytes
 constexpr uint64_t SLOT_PER_BUCKET = 8;
 constexpr uint64_t BUCKET_BITS = 6;
 constexpr uint64_t BUCKET_PER_SEGMENT = 1 << (BUCKET_BITS);
-constexpr uint64_t INIT_DEPTH = 12;
-constexpr uint64_t MAX_DEPTH = 20;
+constexpr uint64_t INIT_DEPTH = 6;
+constexpr uint64_t MAX_DEPTH = 14;
 constexpr uint64_t DIR_SIZE = (1 << MAX_DEPTH);
 
 struct Slot

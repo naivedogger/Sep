@@ -20,9 +20,9 @@
 #define ORDERED_INSERT
 Config config;
 uint64_t load_num;
-using ClientType = FASTSHIFT::Client;
-using ServerType = FASTSHIFT::Server;
-using Slice = FASTSHIFT::Slice;
+using ClientType = RACE::Client;
+using ServerType = RACE::Server;
+using Slice = RACE::Slice;
 
 inline uint64_t GenKey(uint64_t key)
 {
