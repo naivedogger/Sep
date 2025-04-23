@@ -367,12 +367,13 @@ Retry:
     }
 #endif
 
-    // assert(segloc == buc_data->suffix);
+    uint64_t segloc_1 = get_seg_loc(pattern_1, buc_data->local_depth);
+    assert(segloc_1 == buc_data->suffix);
     if (dir->segs[segloc].local_depth != buc_data->local_depth ||
         dir->segs[segloc].local_depth != (buc_data + 2)->local_depth)
     {
         co_await sync_dir();
-        log_err("[%lu:%lu:%lu] op_key:%lu segloc:%lu buc_data->local_depth:%u (buc_data + 2)->local_depth:%u dir->segs[segloc].local_depth:%lu",machine_id,cli_id,coro_id,this->op_key,segloc,buc_data->local_depth,(buc_data + 2)->local_depth,dir->segs[segloc].local_depth);
+        // log_err("[%lu:%lu:%lu] op_key:%lu segloc:%lu buc_data->local_depth:%u (buc_data + 2)->local_depth:%u dir->segs[segloc].local_depth:%lu",machine_id,cli_id,coro_id,this->op_key,segloc,buc_data->local_depth,(buc_data + 2)->local_depth,dir->segs[segloc].local_depth);
         goto Retry;
     }
 
@@ -452,7 +453,7 @@ Retry:
     if (IsCorrectBucket(segloc, buc, pattern_1) == false)
     {
         log_err("[%lu:%lu:%lu] op_key:%lu segloc:%lu wrong bucket",machine_id,cli_id,coro_id,this->op_key,segloc);
-        co_await conn->cas_n(slot_ptr, rmr.rkey, *(uint64_t *)tmp, 0);
+        co_await conn->cas_n(slot_ptr, rmr.rkey, *(uint64_t *)tmp, slot_val);
         co_await sync_dir();
         goto Retry;
     }
@@ -460,7 +461,7 @@ Retry:
     perf.push_insert();
     sum_cost.end_insert();
     sum_cost.push_retry_cnt(retry_cnt);
-
+    // co_await search(key,value);
 }
 
 task<> Client::sync_dir()
@@ -590,18 +591,42 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         co_await conn->write(buc_ptr, rmr.rkey, cur_buc, sizeof(uint32_t), lmr->lkey);
     }
 
+    // usleep(20);
+
     // 读取旧的segment
     Segment *new_seg = (Segment *)alloc.alloc(sizeof(Segment));
     uint64_t new_seg_ptr = ralloc.alloc(sizeof(Segment), true); //按八字节对齐
     uint64_t first_seg_loc = seg_loc & ((1ull << local_depth) - 1);
     uint64_t new_seg_loc = first_seg_loc | (1ull << local_depth);
-    for(int i = 0; i < BUCKET_PER_SEGMENT * 3; i ++) {
-        buc_ptr = seg_ptr + i * sizeof(Bucket);
+    // uint64_t raddrs[BUCKET_PER_SEGMENT*3];
+    // void* laddrs[BUCKET_PER_SEGMENT*3];
+    std::vector<rdma_future> inflight_req;
+    inflight_req.reserve(BUCKET_PER_SEGMENT*3);
+    // rdma_future inflight_req[BUCKET_PER_SEGMENT*3];
+    // TODO:实现batch
+    for(int i = 0; i < BUCKET_PER_SEGMENT * 3; ) {
+        int start_idx = i;
+        for(int j = 0; j < dma_default_workq_size; j ++) {
+            buc_ptr = seg_ptr + i * sizeof(Bucket);
+            cur_buc = &new_seg->buckets[i];
+            inflight_req.emplace_back(conn->read(buc_ptr, rmr.rkey, cur_buc, sizeof(Bucket), lmr->lkey));
+            i ++;
+        }
+        for(int j = 0; j < dma_default_workq_size && (start_idx+j) < i; j ++) {
+            co_await std::move(inflight_req[start_idx+j]);
+        }
+        // raddrs[i] = buc_ptr;
+        // laddrs[i] = cur_buc;
+        // inflight_req.emplace_back(conn->read(buc_ptr, rmr.rkey, cur_buc, sizeof(Bucket), lmr->lkey));
+        // co_await conn->read(buc_ptr, rmr.rkey, cur_buc, sizeof(Bucket), lmr->lkey);
+    }
+
+    for(int i = 0; i < BUCKET_PER_SEGMENT*3; i ++) {
         cur_buc = &new_seg->buckets[i];
-        co_await conn->read(buc_ptr, rmr.rkey, cur_buc, sizeof(Bucket), lmr->lkey);
         cur_buc->local_depth = local_depth + 1;
         cur_buc->suffix = new_seg_loc;
     }
+    // co_await conn->read_batch(raddrs, rmr.rkey, laddrs, sizeof(Bucket), lmr->lkey, BUCKET_PER_SEGMENT*3);
     
     // 需要所有叶子的指针
     // if(local_depth - INIT_DEPTH >= 8 && (local_depth - INIT_DEPTH) % 8 == 0) {
@@ -690,6 +715,7 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
     // Segment *old_seg = (Segment *)alloc.alloc(sizeof(Segment));
     // co_await MoveData(seg_ptr, new_seg_ptr, old_seg, new_seg);
 
+    // TODO: 检查一下下面这些的逻辑，感觉好像没有必要
     // Free Move_Data Lock
     while (co_await LockDir())
     {
@@ -918,11 +944,22 @@ Retry_search:
         sum_cost.push_level_cnt(1);
         co_return std::make_tuple(slot_ptr, slot);
     }
-    log_err("[%lu:%lu]No match key :%lu", cli_id, coro_id, *(uint64_t *)key->data);
-    miss_count ++;
-    if(read_cnt == 980000) {
-        log_err("No match cnt :%lu, slots overwriten :%lu", miss_count, empty_cnt);
-    }
+    // log_err("[%lu:%lu]No match:%lu,segloc:%lu,suffix:%lu,buc2:%lu", cli_id, coro_id, *(uint64_t *)key->data, segloc, buc_data->suffix, bucidx_2);
+    // for(int i = 0; i < SLOT_PER_BUCKET; i ++) {
+    //     KVBlock* kv_block = (KVBlock*)alloc.alloc(sizeof(KVBlock));
+    //     if(buc_data->slots[i].offset != 0) {
+    //         co_await conn->read(ralloc.ptr(buc_data->slots[i].offset), rmr.rkey, kv_block, sizeof(KVBlock),lmr->lkey);
+    //     }
+    //     uint64_t pattern_1;
+    //     auto pattern = hash(kv_block->data, kv_block->k_len);
+    //     pattern_1 = (uint64_t)pattern;
+    //     uint64_t segloc = get_seg_loc(pattern_1, buc_data->local_depth);
+    //     if(segloc != buc_data->suffix)
+    //         miss_count ++;
+    // }
+    // if(read_cnt == 980000) {
+    //     log_err("No match cnt :%lu, slots overwriten :%lu", miss_count, empty_cnt);
+    // }
     perf.push_search();
     sum_cost.push_level_cnt(1);
     co_return std::make_tuple(0ull, 0);
