@@ -367,8 +367,8 @@ Retry:
     }
 #endif
 
-    uint64_t segloc_1 = get_seg_loc(pattern_1, buc_data->local_depth);
-    assert(segloc_1 == buc_data->suffix);
+    // uint64_t segloc_1 = get_seg_loc(pattern_1, buc_data->local_depth);
+    // assert(segloc_1 == buc_data->suffix);
     if (dir->segs[segloc].local_depth != buc_data->local_depth ||
         dir->segs[segloc].local_depth != (buc_data + 2)->local_depth)
     {
@@ -581,14 +581,23 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
     struct Bucket *cur_buc;
     uint64_t pattern_1, pattern_2, suffix;
     uint64_t buc_ptr;
-    for (uint64_t i = 0; i < BUCKET_PER_SEGMENT * 3; i++)
+    std::vector<rdma_future> inflight_req;
+    inflight_req.reserve(BUCKET_PER_SEGMENT*3);
+    for (uint64_t i = 0; i < BUCKET_PER_SEGMENT * 3; )
     {
-        buc_ptr = seg_ptr + i * sizeof(Bucket);
-        cur_buc = &old_seg->buckets[i];
-
-        // Update local_depth&suffix
-        cur_buc->local_depth = local_depth + 1;
-        co_await conn->write(buc_ptr, rmr.rkey, cur_buc, sizeof(uint32_t), lmr->lkey);
+        int start_idx = i;
+        for(int j = 0; j < dma_default_workq_size; j ++) {
+            buc_ptr = seg_ptr + i * sizeof(Bucket);
+            cur_buc = &old_seg->buckets[i];
+    
+            // Update local_depth&suffix
+            cur_buc->local_depth = local_depth + 1;
+            inflight_req.emplace_back(conn->write(buc_ptr, rmr.rkey, cur_buc, sizeof(uint32_t), lmr->lkey));
+            i ++;
+        }
+        for(int j = 0; j < dma_default_workq_size && (start_idx+j) < i; j ++) {
+            co_await std::move(inflight_req[start_idx+j]);
+        }
     }
 
     // usleep(20);
@@ -600,8 +609,6 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
     uint64_t new_seg_loc = first_seg_loc | (1ull << local_depth);
     // uint64_t raddrs[BUCKET_PER_SEGMENT*3];
     // void* laddrs[BUCKET_PER_SEGMENT*3];
-    std::vector<rdma_future> inflight_req;
-    inflight_req.reserve(BUCKET_PER_SEGMENT*3);
     // rdma_future inflight_req[BUCKET_PER_SEGMENT*3];
     // TODO:实现batch
     for(int i = 0; i < BUCKET_PER_SEGMENT * 3; ) {
@@ -672,16 +679,18 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
     {
         log_err("[%lu:%lu:%lu] %lu update global_depth from:%lu to %lu",machine_id,cli_id,coro_id,this->op_key,dir->global_depth,dir->global_depth+1);
         // Update Old_seg depth
-        dir->segs[seg_loc].split_lock = 1;
+        // 这里是不是不需要 split_lock
+        dir->segs[seg_loc].split_lock = 0;
         dir->segs[seg_loc].local_depth = local_depth + 1;
         co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + seg_loc * sizeof(DirEntry), rmr.rkey,
                              &dir->segs[seg_loc], sizeof(DirEntry), lmr->lkey);
 
         // Extend Dir
         uint64_t dir_size = 1 << dir->global_depth;
+        // 涉及目录扩容的时候，直接将旧目录的segs指针复制一份成为新的，也就是说指向同一个桶，且split_lock的状况是相同的
         memcpy(dir->segs + dir_size, dir->segs, dir_size * sizeof(DirEntry));
         dir->segs[new_seg_loc].local_depth = local_depth + 1;
-        dir->segs[new_seg_loc].split_lock = 1;
+        dir->segs[new_seg_loc].split_lock = 0;
         dir->segs[new_seg_loc].seg_ptr = new_seg_ptr;
         co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + dir_size * sizeof(DirEntry), rmr.rkey,
                              dir->segs + dir_size, dir_size * sizeof(DirEntry), lmr->lkey);
@@ -697,13 +706,15 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         uint64_t cur_seg_loc;
         for (uint64_t i = 0; i < stride; i++)
         {
+            // 不涉及目录扩容的时候，就是修改那些被影响到的指针，按照第LD位是否为1进行分配
             cur_seg_loc = (i << local_depth) | first_seg_loc;
             if (i & 1)
                 dir->segs[cur_seg_loc].seg_ptr = new_seg_ptr;
             else
                 dir->segs[cur_seg_loc].seg_ptr = seg_ptr;
             dir->segs[cur_seg_loc].local_depth = local_depth + 1;
-            dir->segs[cur_seg_loc].split_lock = 1;
+            // 这里可以直接设置为0，首先dir上了一把大锁，其次一个seg同时只能被一个线程扩容
+            dir->segs[cur_seg_loc].split_lock = 0;
 
             co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + cur_seg_loc * sizeof(DirEntry), rmr.rkey,
                                  dir->segs + cur_seg_loc, sizeof(DirEntry), lmr->lkey);
@@ -717,33 +728,33 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
 
     // TODO: 检查一下下面这些的逻辑，感觉好像没有必要
     // Free Move_Data Lock
-    while (co_await LockDir())
-    {
-    }
+    // while (co_await LockDir())
+    // {
+    // }
 
-    if (global_flag)
-    {
-        dir->segs[seg_loc].split_lock = 0;
-        co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + seg_loc * sizeof(DirEntry), rmr.rkey,
-                             &(dir->segs[seg_loc].split_lock), sizeof(uint64_t), lmr->lkey);
-        dir->segs[new_seg_loc].split_lock = 0;
-        co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + new_seg_loc * sizeof(DirEntry), rmr.rkey,
-                             &(dir->segs[new_seg_loc].split_lock), sizeof(uint64_t), lmr->lkey);
-    }
-    else
-    {
-        uint64_t stride =
-            (1llu) << (dir->global_depth - local_depth + 2); // 这里增加2，是为了给隐式置为1的部分entry解锁
-        uint64_t cur_seg_loc;
-        for (uint64_t i = 0; i < stride; i++)
-        {
-            cur_seg_loc = (i << local_depth) | first_seg_loc;
-            dir->segs[cur_seg_loc].split_lock = 0;
-            co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + cur_seg_loc * sizeof(DirEntry), rmr.rkey,
-                                 &(dir->segs[cur_seg_loc].split_lock), sizeof(uint64_t), lmr->lkey);
-        }
-    }
-    co_await UnlockDir();
+    // if (global_flag)
+    // {
+    //     dir->segs[seg_loc].split_lock = 0;
+    //     co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + seg_loc * sizeof(DirEntry), rmr.rkey,
+    //                          &(dir->segs[seg_loc].split_lock), sizeof(uint64_t), lmr->lkey);
+    //     dir->segs[new_seg_loc].split_lock = 0;
+    //     co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + new_seg_loc * sizeof(DirEntry), rmr.rkey,
+    //                          &(dir->segs[new_seg_loc].split_lock), sizeof(uint64_t), lmr->lkey);
+    // }
+    // else
+    // {
+    //     uint64_t stride =
+    //         (1llu) << (dir->global_depth - local_depth + 2); // 这里增加2，是为了给隐式置为1的部分entry解锁
+    //     uint64_t cur_seg_loc;
+    //     for (uint64_t i = 0; i < stride; i++)
+    //     {
+    //         cur_seg_loc = (i << local_depth) | first_seg_loc;
+    //         dir->segs[cur_seg_loc].split_lock = 0;
+    //         co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + cur_seg_loc * sizeof(DirEntry), rmr.rkey,
+    //                              &(dir->segs[cur_seg_loc].split_lock), sizeof(uint64_t), lmr->lkey);
+    //     }
+    // }
+    // co_await UnlockDir();
 
     sum_cost.end_split();
     co_return 0;
@@ -860,7 +871,7 @@ task<> Client::UnlockDir()
 }
 
 uint64_t miss_count = 0;
-int read_cnt = 0;
+std::atomic<int> read_cnt = 0;
 
 task<std::tuple<uintptr_t, uint64_t>> Client::search(Slice *key, Slice *value)
 {
@@ -927,7 +938,7 @@ Retry_search:
     //     goto Retry;
     // }
     if (IsCorrectBucket(segloc, buc_data, pattern_1) == false ||
-        IsCorrectBucket(segloc, buc_data + 2, pattern_2) == false)
+        IsCorrectBucket(segloc, buc_data + 2, pattern_1) == false)
     {
         log_err("Wrong Bucket After Load");
         auto slot_info = co_await search_on_resize(key, value);
@@ -939,12 +950,16 @@ Retry_search:
     uintptr_t slot_ptr;
     uint64_t slot;
     char key_fp = fp(pattern_1);
+    // if(read_cnt == 9900000) {
+    //     log_err("No match cnt :%lu, slots overwritten :%lu", miss_count, empty_cnt);
+    // }
     if (co_await search_bucket(key, value, slot_ptr, slot, buc_data, bucptr_1, bucptr_2, pattern_1)){
         perf.push_search();
         sum_cost.push_level_cnt(1);
         co_return std::make_tuple(slot_ptr, slot);
     }
-    // log_err("[%lu:%lu]No match:%lu,segloc:%lu,suffix:%lu,buc2:%lu", cli_id, coro_id, *(uint64_t *)key->data, segloc, buc_data->suffix, bucidx_2);
+    miss_count ++;
+    log_err("[%lu:%lu]No match:%lu,segloc:%lu,suffix:%lu,buc2:%lu", cli_id, coro_id, *(uint64_t *)key->data, segloc, buc_data->suffix, bucidx_2);
     // for(int i = 0; i < SLOT_PER_BUCKET; i ++) {
     //     KVBlock* kv_block = (KVBlock*)alloc.alloc(sizeof(KVBlock));
     //     if(buc_data->slots[i].offset != 0) {
@@ -957,8 +972,8 @@ Retry_search:
     //     if(segloc != buc_data->suffix)
     //         miss_count ++;
     // }
-    // if(read_cnt == 980000) {
-    //     log_err("No match cnt :%lu, slots overwriten :%lu", miss_count, empty_cnt);
+    // if(read_cnt == 11800000) {
+    //     log_err("No match cnt :%lu, slots overwritten :%lu", miss_count, empty_cnt);
     // }
     perf.push_search();
     sum_cost.push_level_cnt(1);
