@@ -13,7 +13,7 @@ then
     ./ser_cli --server \
     --gid_idx 1 \
     --max_coro 256 --cq_size 64 \
-    --mem_size 21268055040
+    --mem_size 41268055040
 else
     cd "build"
     echo "machine" $1
