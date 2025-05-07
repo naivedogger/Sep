@@ -24,7 +24,7 @@ else
                 echo "num_cli" $num_cli "num_coro" $num_coro "load_num" $load_num
                 # ./ser_cli_var_kv \
                 ./ser_cli \
-                --server_ip 192.169.1.15 --num_machine $4 --num_cli $num_cli --num_coro $num_coro \
+                --server_ip 192.169.1.4 --num_machine $4 --num_cli $num_cli --num_coro $num_coro \
                 --gid_idx 1 \
                 --max_coro 256 --cq_size 64 \
                 --machine_id $1  \
