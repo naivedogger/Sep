@@ -540,7 +540,7 @@ uint64_t Client::get_first_seg_loc(uint64_t pattern, uint64_t global_depth)
     uintptr_t segptr = 0;
     uint64_t segloc = 0;
     while(segptr == 0) {
-        assert(global_depth >= 0);
+        assert(global_depth > 0);
         segloc = get_seg_loc(pattern, global_depth);
         segptr = dir->segs[segloc].seg_ptr;
         if(segptr == 0) {
@@ -710,7 +710,9 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         // Extend Dir
         uint64_t dir_size = 1 << dir->global_depth;
         // 涉及目录扩容的时候，直接将旧目录的segs指针复制一份成为新的，也就是说指向同一个桶，且split_lock的状况是相同的
-        memcpy(dir->segs + dir_size, dir->segs, dir_size * sizeof(DirEntry));
+        // memcpy(dir->segs + dir_size, dir->segs, dir_size * sizeof(DirEntry));
+        // 新逻辑：新的目录全空
+        memset(dir->segs + dir_size, 0, dir_size * sizeof(DirEntry));
         dir->segs[new_seg_loc].local_depth = local_depth + 1;
         dir->segs[new_seg_loc].split_lock = 0;
         dir->segs[new_seg_loc].seg_ptr = new_seg_ptr;
@@ -725,9 +727,9 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         // TODO：这些应该直接设置成 0 即可
         // Local split: Edit all directory share this seg_ptr
         //笔记见备忘录
-        uint64_t stride = (1llu) << (dir->global_depth - local_depth);
+        // uint64_t stride = (1llu) << (dir->global_depth - local_depth);
         uint64_t cur_seg_loc;
-        for (uint64_t i = 0; i < stride; i++)
+        for (uint64_t i = 0; i < 2; i++)
         {
             // 不涉及目录扩容的时候，就是修改那些被影响到的指针，按照第LD位是否为1进行分配
             cur_seg_loc = (i << local_depth) | first_seg_loc;
@@ -893,7 +895,7 @@ task<> Client::UnlockDir()
     co_await conn->cas_n(rmr.raddr, rmr.rkey, 1, 0);
 }
 
-uint64_t miss_count = 0;
+std::atomic<int> miss_count = 0;
 std::atomic<int> read_cnt = 0;
 
 task<std::tuple<uintptr_t, uint64_t>> Client::search(Slice *key, Slice *value)
@@ -985,8 +987,8 @@ Retry_search:
         sum_cost.push_level_cnt(1);
         co_return std::make_tuple(slot_ptr, slot);
     }
-    miss_count ++;
-    log_err("[%lu:%lu]No match:%lu,segloc:%lu,suffix:%lu,buc2:%lu", cli_id, coro_id, *(uint64_t *)key->data, segloc, buc_data->suffix, bucidx_2);
+    miss_count.fetch_add(1);
+    log_err("[%lu:%lu]No match:%lu,segloc:%lu,suffix:%lu,buc2:%lu,miss_cnt:%lu", cli_id, coro_id, *(uint64_t *)key->data, segloc, buc_data->suffix, bucidx_2, miss_count.load());
     // for(int i = 0; i < SLOT_PER_BUCKET; i ++) {
     //     KVBlock* kv_block = (KVBlock*)alloc.alloc(sizeof(KVBlock));
     //     if(buc_data->slots[i].offset != 0) {
