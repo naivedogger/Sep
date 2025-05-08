@@ -35,7 +35,9 @@ const int rdma_max_pending_tasks = 16;
 const int dma_default_workq_size = 64;
 const int dma_default_inv_buf_size = 128;
 const int dma_tempmp_mmap_name = 114514;
-const int kReadOroMax = 500;
+// 考虑到 MTT 通常是 2K 左右，最小操作粒度通常是 8 字节
+const int kReadOroMax = 64;
+const int kWriteOroMax = 64;
 
 using rdma_dmmr = std::tuple<ibv_dm *, ibv_mr *>;
 
@@ -460,10 +462,11 @@ public:
     rdma_buffer_future read(uint64_t raddr, uint32_t rkey, uint32_t len);
     rdma_buffer_future read(const rdma_rmr &remote_mr, uint32_t offset, uint32_t len)
     { return read(remote_mr.raddr + offset, remote_mr.rkey, len); }
-    rdma_future read_batch(uint64_t* raddr, uint32_t rkey, void *laddr, uint32_t len, uint32_t lkey, int size);
+    rdma_future read_batch(std::vector<uint64_t>& raddrs, uint32_t rkey, std::vector<void*>& laddrs, uint32_t len, uint32_t lkey, int size);
     rdma_future read(uint64_t raddr, uint32_t rkey, void *laddr, uint32_t len, uint32_t lkey);
     rdma_future read(const rdma_rmr &remote_mr, uint32_t offset, void *laddr, uint32_t len, uint32_t lkey)
     { return read(remote_mr.raddr + offset, remote_mr.rkey, laddr, len, lkey); }
+    rdma_future write_batch(std::vector<uint64_t>& raddrs, uint32_t rkey, std::vector<void*>& laddrs, uint32_t len, uint32_t lkey, int size);
     rdma_future write(uint64_t raddr, uint32_t rkey, void *laddr, uint32_t len, uint32_t lkey = 0);
     rdma_future write(const rdma_rmr &remote_mr, uint32_t offset, void *laddr, uint32_t len, uint32_t lkey = 0)
     { return write(remote_mr.raddr + offset, remote_mr.rkey, laddr, len, lkey); }

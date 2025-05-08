@@ -1003,7 +1003,9 @@ rdma_future rdma_conn::do_send(ibv_send_wr *wr_begin, ibv_send_wr *wr_end)
     wr_end->wr_id = cor->id;
     wr_end->send_flags |= IBV_SEND_SIGNALED;
     ibv_send_wr *bad;
-    assert_check(0 == ibv_post_send(qp, wr_begin, &bad));
+    int res = ibv_post_send(qp, wr_begin, &bad);
+    assert_check(0 == res);
+    // assert_check(0 == ibv_post_send(qp, wr_begin, &bad));
     return rdma_future(cor, this);
 }
 
@@ -1072,27 +1074,35 @@ rdma_buffer_future rdma_conn::read(uint64_t raddr, uint32_t rkey, uint32_t len)
 
 // TODO:实现一个batch_read
 
-rdma_future rdma_conn::read_batch(uint64_t* raddrs, uint32_t rkey, void *laddrs, uint32_t len, uint32_t lkey, int size) {
-    // 需要确保raddr是同一台远端机器,len是每一段的长度，size是数量，需要确保size<kReadOroMax
-    struct ibv_send_wr wr[kReadOroMax];
-    struct ibv_send_wr *wrbad;
-    struct ibv_sge sg[kReadOroMax];
+rdma_future rdma_conn::read_batch(std::vector<uint64_t>& raddrs, uint32_t rkey, std::vector<void*>& laddrs, uint32_t len, uint32_t lkey, int size) {
+    // 需要确保raddr是同一台远端机器,len是每一段的长度，size是数量，需要确保 size <= kReadOroMax
+    assert_check(size <= kReadOroMax);
+    ibv_send_wr* wr[std::min(size,kReadOroMax)];
+    ibv_sge* sg[std::min(size,kReadOroMax)];
 
-    void** ptr_array = static_cast<void**> (laddrs);
+    for(int i = 0; i < size; i ++) {
+        auto [sg_ptr, wr_ptr] = alloc_many(sizeof(ibv_sge), sizeof(ibv_send_wr));
+        sg[i] = (ibv_sge *)sg_ptr;
+        wr[i] = (ibv_send_wr *)wr_ptr;
+    }
     
     for(int i = 0; i < size; i++) {
         uint64_t raddr = raddrs[i];
-        void* laddr = ptr_array[i];
+        void* laddr = laddrs[i];
         if(raddr==0){
             log_err("zero raddr");
             // exit(-1);
             int* ptr = NULL;
             *ptr = 10; // 在这里引发段错误
         }
-        fill_rw_wr<IBV_WR_RDMA_READ>(&wr[i],&sg[i],raddr,rkey,laddr,len,lkey);
-        wr[i].next = (i == size-1) ? NULL : &wr[i+1];
+        fill_rw_wr<IBV_WR_RDMA_READ>(wr[i],sg[i],raddr,rkey,laddr,len,lkey);
+        wr[i]->next = (i == size-1) ? NULL : wr[i+1];
     }
-    auto res = do_send(&wr[0],&wr[size-1]);
+    auto res = do_send(wr[0],wr[size-1]);
+    for(int i = 0; i < size; i ++ ) {
+        // 目前没有释放 wr
+        free_buf(sg[i]);
+    }
     return res;
 }
 
@@ -1110,6 +1120,40 @@ rdma_future rdma_conn::read(uint64_t raddr, uint32_t rkey, void *laddr, uint32_t
     fill_rw_wr<IBV_WR_RDMA_READ>(send_wr, (ibv_sge *)sge, raddr, rkey, laddr, len, lkey);
     auto res = do_send(send_wr, send_wr);
     free_buf(sge);
+    return res;
+}
+
+// TODO:实现一个batch_write
+
+rdma_future rdma_conn::write_batch(std::vector<uint64_t>& raddrs, uint32_t rkey, std::vector<void*>& laddrs, uint32_t len, uint32_t lkey, int size) {
+    // 需要确保raddr是同一台远端机器,len是每一段的长度，size是数量，需要确保 size <= kWriteOroMax
+    assert_check(size <= kWriteOroMax);
+    ibv_send_wr* wr[std::min(size,kWriteOroMax)];
+    ibv_sge* sg[std::min(size,kWriteOroMax)];
+
+    for(int i = 0; i < size; i ++) {
+        auto [sg_ptr, wr_ptr] = alloc_many(sizeof(ibv_sge), sizeof(ibv_send_wr));
+        sg[i] = (ibv_sge *)sg_ptr;
+        wr[i] = (ibv_send_wr *)wr_ptr;
+    }
+    
+    for(int i = 0; i < size; i++) {
+        uint64_t raddr = raddrs[i];
+        void* laddr = laddrs[i];
+        if(raddr==0){
+            log_err("zero raddr");
+            // exit(-1);
+            int* ptr = NULL;
+            *ptr = 10; // 在这里引发段错误
+        }
+        fill_rw_wr<IBV_WR_RDMA_WRITE>(wr[i],sg[i],raddr,rkey,laddr,len,lkey);
+        wr[i]->next = (i == size-1) ? NULL : wr[i+1];
+    }
+    auto res = do_send(wr[0],wr[size-1]);
+    for(int i = 0; i < size; i ++ ) {
+        // 目前没有释放 wr
+        free_buf(sg[i]);
+    }
     return res;
 }
 
