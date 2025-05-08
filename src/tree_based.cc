@@ -610,47 +610,48 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
      * 好处：实现比较简单不需要重写函数，实测是有效果的，不过线程数量上去以后效果不佳，不知道是否是这里的问题
      * 坏处：可能需要占用很多 RDMA Doorbell 寄存器导致争用的问题
      */
-    std::vector<rdma_future> inflight_req;
-    inflight_req.reserve(BUCKET_PER_SEGMENT*3);
-    for (uint64_t i = 0; i < BUCKET_PER_SEGMENT * 3; )
-    {
-        int start_idx = i;
-        for(int j = 0; j < dma_default_workq_size && i < BUCKET_PER_SEGMENT * 3; j ++) {
-            buc_ptr = seg_ptr + i * sizeof(Bucket);
-            cur_buc = &((old_seg->buckets)[i]);
+    // std::vector<rdma_future> inflight_req;
+    // inflight_req.reserve(BUCKET_PER_SEGMENT*3);
+    // for (uint64_t i = 0; i < BUCKET_PER_SEGMENT * 3; )
+    // {
+    //     int start_idx = i;
+    //     for(int j = 0; j < dma_default_workq_size && i < BUCKET_PER_SEGMENT * 3; j ++) {
+    //         buc_ptr = seg_ptr + i * sizeof(Bucket);
+    //         cur_buc = &((old_seg->buckets)[i]);
     
-            // Update local_depth&suffix
-            cur_buc->local_depth = local_depth + 1;
-            inflight_req.emplace_back(conn->write(buc_ptr, rmr.rkey, cur_buc, sizeof(uint32_t), lmr->lkey));
-            i ++;
-        }
-        for(int j = 0; j < dma_default_workq_size && (start_idx+j) < i; j ++) {
-            co_await std::move(inflight_req[start_idx+j]);
-        }
-    }
+    //         // Update local_depth&suffix
+    //         cur_buc->local_depth = local_depth + 1;
+    //         inflight_req.emplace_back(conn->write(buc_ptr, rmr.rkey, cur_buc, sizeof(uint32_t), lmr->lkey));
+    //         i ++;
+    //     }
+    //     for(int j = 0; j < dma_default_workq_size && (start_idx+j) < i; j ++) {
+    //         co_await std::move(inflight_req[start_idx+j]);
+    //     }
+    // }
     // EOF：Batch 实现方法 1
 
     /***
      * Batch 实现方法 2：自定义一个 Batch write 方法，只调用一次 ibv_post_send
      * 好处：理论上不会占用太多寄存器，虽然不能确保每个寄存器只服务于一个线程
      * 坏处：？目前还没测试好可能有 BUG
+     * upd. 初步测试了下，应该没啥问题，后续可以考虑把 方法 1 删了
      */
-    // for (uint64_t i = 0; i < BUCKET_PER_SEGMENT * 3; )
-    // {
-    //     int start_idx = i;
-    //     std::vector<uint64_t> buc_ptrs;
-    //     std::vector<void*> cur_bucs;
-    //     buc_ptrs.reserve(kWriteOroMax);
-    //     cur_bucs.reserve(kWriteOroMax);
-    //     for(int j = 0; j < kWriteOroMax && i < BUCKET_PER_SEGMENT * 3; j ++) {
-    //         buc_ptrs[j] = seg_ptr + i * sizeof(Bucket);
-    //         (old_seg->buckets)[i].local_depth = local_depth + 1;
-    //         cur_bucs[j] = &((old_seg->buckets)[i]);
-    //         i ++;
-    //     }
-    //     auto res = conn->write_batch(buc_ptrs, rmr.rkey, cur_bucs, sizeof(uint32_t), lmr->lkey, i - start_idx);
-    //     co_await std::move(res);
-    // }
+    for (uint64_t i = 0; i < BUCKET_PER_SEGMENT * 3; )
+    {
+        int start_idx = i;
+        std::vector<uint64_t> buc_ptrs;
+        std::vector<void*> cur_bucs;
+        buc_ptrs.reserve(kWriteOroMax);
+        cur_bucs.reserve(kWriteOroMax);
+        for(int j = 0; j < kWriteOroMax && i < BUCKET_PER_SEGMENT * 3; j ++) {
+            buc_ptrs[j] = seg_ptr + i * sizeof(Bucket);
+            (old_seg->buckets)[i].local_depth = local_depth + 1;
+            cur_bucs[j] = &((old_seg->buckets)[i]);
+            i ++;
+        }
+        auto res = conn->write_batch(buc_ptrs, rmr.rkey, cur_bucs, sizeof(uint32_t), lmr->lkey, i - start_idx);
+        co_await std::move(res);
+    }
     // EOF：Batch 实现方法 2
     // usleep(20);
 
@@ -667,40 +668,40 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
      * Batch Read 实现方法 1，直接多个 post_send
      * 好处坏处与前面类似
      */
-    inflight_req.clear();
-    for(int i = 0; i < BUCKET_PER_SEGMENT * 3; ) {
-        int start_idx = i;
-        for(int j = 0; j < dma_default_workq_size && i < BUCKET_PER_SEGMENT * 3; j ++) {
-            buc_ptr = seg_ptr + i * sizeof(Bucket);
-            cur_buc = &((new_seg->buckets)[i]);
-            inflight_req.emplace_back(conn->read(buc_ptr, rmr.rkey, cur_buc, sizeof(Bucket), lmr->lkey));
-            i ++;
-        }
-        for(int j = 0; j < dma_default_workq_size && (start_idx+j) < i; j ++) {
-            co_await std::move(inflight_req[start_idx+j]);
-        }
-    }
+    // inflight_req.clear();
+    // for(int i = 0; i < BUCKET_PER_SEGMENT * 3; ) {
+    //     int start_idx = i;
+    //     for(int j = 0; j < dma_default_workq_size && i < BUCKET_PER_SEGMENT * 3; j ++) {
+    //         buc_ptr = seg_ptr + i * sizeof(Bucket);
+    //         cur_buc = &((new_seg->buckets)[i]);
+    //         inflight_req.emplace_back(conn->read(buc_ptr, rmr.rkey, cur_buc, sizeof(Bucket), lmr->lkey));
+    //         i ++;
+    //     }
+    //     for(int j = 0; j < dma_default_workq_size && (start_idx+j) < i; j ++) {
+    //         co_await std::move(inflight_req[start_idx+j]);
+    //     }
+    // }
     // EOF: Batch Read 实现方法 1
 
     /***
      * Batch Read 实现方法 2
      * 直接调用 read_batch 函数
      */
-    // for (uint64_t i = 0; i < BUCKET_PER_SEGMENT * 3; )
-    // {
-    //     int start_idx = i;
-    //     std::vector<uint64_t> buc_ptrs;
-    //     std::vector<void*> cur_bucs;
-    //     buc_ptrs.reserve(kReadOroMax);
-    //     cur_bucs.reserve(kReadOroMax);
-    //     for(int j = 0; j < kReadOroMax && i < BUCKET_PER_SEGMENT * 3; j ++) {
-    //         buc_ptrs[j] = seg_ptr + i * sizeof(Bucket);
-    //         cur_bucs[j] = &((new_seg->buckets)[i]);
-    //         i ++;
-    //     }
-    //     auto res = conn->read_batch(buc_ptrs, rmr.rkey, cur_bucs, sizeof(Bucket), lmr->lkey, i - start_idx);
-    //     co_await std::move(res);
-    // }
+    for (uint64_t i = 0; i < BUCKET_PER_SEGMENT * 3; )
+    {
+        int start_idx = i;
+        std::vector<uint64_t> buc_ptrs;
+        std::vector<void*> cur_bucs;
+        buc_ptrs.reserve(kReadOroMax);
+        cur_bucs.reserve(kReadOroMax);
+        for(int j = 0; j < kReadOroMax && i < BUCKET_PER_SEGMENT * 3; j ++) {
+            buc_ptrs[j] = seg_ptr + i * sizeof(Bucket);
+            cur_bucs[j] = &((new_seg->buckets)[i]);
+            i ++;
+        }
+        auto res = conn->read_batch(buc_ptrs, rmr.rkey, cur_bucs, sizeof(Bucket), lmr->lkey, i - start_idx);
+        co_await std::move(res);
+    }
     // EOF：Batch Read 实现方法 2
 
     for(int i = 0; i < BUCKET_PER_SEGMENT*3; i ++) {
