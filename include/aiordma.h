@@ -26,7 +26,7 @@ const int rdma_info_mr_probing = 256;
 const int rdma_max_rd_atomic = 8;
 const int rdma_default_cq_size = 64;
 const char rdma_default_host[] = "127.0.0.1";
-const int rdma_default_port = 10001;
+const int rdma_default_port = 10002;
 const int rdma_default_max_coros = 256;
 // 目前把 batch 大小调整到 256 之后发现 post send 会返回错误码 12，把这个调大 4 倍试试。
 const int rdma_default_tempmp_size = 1 << 26; // 64M

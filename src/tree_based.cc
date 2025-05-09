@@ -805,7 +805,7 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         dir->segs[new_seg_loc].seg_ptr = new_seg_ptr;
         co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + dir_size * sizeof(DirEntry), rmr.rkey,
                              dir->segs + dir_size, dir_size * sizeof(DirEntry), lmr->lkey);
-        // Update Global Depthx
+        // Update Global Depthx 最后更新全局深度，避免其它线程读到没有写完的 dir entry
         dir->global_depth++;
         co_await conn->write(rmr.raddr + sizeof(uint64_t), rmr.rkey, &dir->global_depth, sizeof(uint64_t), lmr->lkey);
     }
