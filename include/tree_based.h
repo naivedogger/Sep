@@ -14,6 +14,7 @@
 #include <vector>
 
 #define WO_WAIT_WRITE
+// #define LOCK_DIR
 
 namespace TREEBASED
 {
@@ -139,6 +140,8 @@ class Client : public BasicDB
     // Global/Local并行的方式造成的等待冲突太高了，就使用简单的单个lock
     task<int> LockDir();
     task<> UnlockDir();
+    task<int> LockSeg(int segloc);
+    task<> UnlockSeg(int segloc);
     task<int> SetSlot(uint64_t buc_ptr, uint64_t slot);
     task<> MoveData(uint64_t old_seg_ptr, uint64_t new_seg_ptr, Segment *seg, Segment *new_seg);
 

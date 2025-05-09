@@ -559,7 +559,17 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         log_err("Exceed MAX_DEPTH");
         exit(-1);
     }
+    // 重写这个 Lock 方法，以 segment 为粒度
+#ifdef LOCK_DIR
     if (co_await LockDir())
+#else
+    int tmp_res;
+    if(global_flag)
+        tmp_res = co_await LockDir();
+    else
+        tmp_res = co_await LockSeg(seg_loc);
+    if (tmp_res)
+#endif
     {
         co_await sync_dir();
         sum_cost.end_split();
@@ -572,7 +582,14 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
     co_await conn->read(rmr.raddr + sizeof(uint64_t), rmr.rkey, remote_depth, sizeof(uint64_t), lmr->lkey);
     if (*remote_depth != dir->global_depth)
     {
+#ifdef LOCK_DIR
         co_await UnlockDir();
+#else
+        if(global_flag)
+            co_await UnlockDir();
+        else
+            co_await UnlockSeg(seg_loc);
+#endif
         co_await sync_dir();
         sum_cost.end_split();
         co_return 1;
@@ -583,18 +600,34 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
                         sizeof(DirEntry), lmr->lkey);
     if (remote_entry->local_depth != dir->segs[seg_loc].local_depth)
     {
+#ifdef LOCK_DIR
         co_await UnlockDir();
+#else
+        if(global_flag)
+            co_await UnlockDir();
+        else
+            co_await UnlockSeg(seg_loc);
+#endif
         co_await sync_dir();
         sum_cost.end_split();
         co_return 1;
     }
-    if (remote_entry->split_lock == 1)
-    {
-        co_await UnlockDir();
-        co_await sync_dir();
-        sum_cost.end_split();
-        co_return 1;
-    }
+    // 这里要去掉。。。因为前面自己设置成 1 了
+//     if (remote_entry->split_lock == 1)
+//     {
+// #ifdef LOCK_DIR
+//         co_await UnlockDir();
+// #else
+//         if(global_flag)
+//             co_await UnlockDir();
+//         else
+//             co_await UnlockSeg(seg_loc);
+// #endif
+//         // 后续可以考虑只 sync 部分需要的 entry
+//         co_await sync_dir();
+//         sum_cost.end_split();
+//         co_return 1;
+//     }
 
     sum_cost.add_split_cnt();
 
@@ -795,11 +828,19 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
             // 这里可以直接设置为0，首先dir上了一把大锁，其次一个seg同时只能被一个线程扩容
             dir->segs[cur_seg_loc].split_lock = 0;
 
+            // 这个地方不需要 全局的 dir 锁
             co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + cur_seg_loc * sizeof(DirEntry), rmr.rkey,
                                  dir->segs + cur_seg_loc, sizeof(DirEntry), lmr->lkey);
         }
     }
+#ifdef LOCK_DIR
     co_await UnlockDir();
+#else
+    if(global_flag)
+        co_await UnlockDir();
+    else
+        co_await UnlockSeg(seg_loc);
+#endif
 
     // Move Data
     // Segment *old_seg = (Segment *)alloc.alloc(sizeof(Segment));
@@ -947,6 +988,22 @@ task<> Client::UnlockDir()
     // Set global split bit
     // assert((connector.get_remote_addr())%8 == 0);
     co_await conn->cas_n(rmr.raddr, rmr.rkey, 1, 0);
+}
+
+/// @brief 设置序号为 segloc 的 segment 的 lock 为 1
+/// @return 0-success，1-split conflict
+task<int> Client::LockSeg(int segloc) {
+    uint64_t lock;
+    // 需要换算一下 split_lock 的地址
+    // 后续需要测试下看看这个地址对不对
+    if(co_await conn->cas_n(rmr.raddr + 2 * sizeof(uint64_t) + segloc * sizeof(DirEntry), rmr.rkey, 0, 1)){
+        co_return 0;
+    }
+    co_return 1;
+}
+
+task<> Client::UnlockSeg(int segloc) {
+    co_await conn->cas_n(rmr.raddr + 2 * sizeof(uint64_t) + segloc * sizeof(DirEntry), rmr.rkey, 1, 0);
 }
 
 std::atomic<int> miss_count = 0;
