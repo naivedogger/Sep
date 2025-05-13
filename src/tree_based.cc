@@ -387,6 +387,10 @@ Retry:
     Bucket *buc = buc_flag ? buc_data : buc_data + 2;
     uintptr_t buc_ptr = buc_flag ? bucptr_1 : bucptr_2;
     uint64_t slot_val = 0;
+
+    // 在插入操作开始前，保存一下 local depth，用于乐观并发控制机制。
+    uint32_t prev_ld = buc_data->local_depth;
+
     // uint64_t pattern_less_bucket = buc_flag ? pattern_1 : pattern_2;
     uintptr_t slot_ptr = FindEmptySlot(buc, buc_idx, buc_ptr, pattern_1, buc_data->local_depth, slot_val);
 
@@ -454,8 +458,11 @@ Retry:
     }
 
     buc = buc_flag ? buc_data : buc_data + 2;
+    // 在插入操作完成后，再检查下 local_depth 是否和之前相等，不相等就重试。
+    uint32_t cur_ld = buc_data->local_depth;
     // 可以在最后检查是不是正确的bucket，决定要不要重试insert
-    if (IsCorrectBucket(segloc, buc, pattern_1) == false)
+    // if (IsCorrectBucket(segloc, buc, pattern_1) == false)
+    if (IsCorrectBucket(segloc, buc, pattern_1) == false || cur_ld != prev_ld)
     {
         log_err("[%lu:%lu:%lu] op_key:%lu segloc:%lu wrong bucket",machine_id,cli_id,coro_id,this->op_key,segloc);
         co_await conn->cas_n(slot_ptr, rmr.rkey, *(uint64_t *)tmp, slot_val);
@@ -564,9 +571,12 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
     if (co_await LockDir())
 #else
     int tmp_res;
-    if(global_flag)
-        tmp_res = co_await LockDir();
-    else
+    // 在新的设计中，已经对旧的 segment 上锁，不需要对 dir 上锁
+    // 只是在 split 完成后需要判断下 global_flag，如果为真则 cas Global_depth (local_depth -> local_depth + 1)
+    // cas 失败不需要重试，说明另一个线程也成功完成了 split，并且更新了 Global_depth
+    // if(global_flag)
+    //     tmp_res = co_await LockDir();
+    // else
         tmp_res = co_await LockSeg(seg_loc);
     if (tmp_res)
 #endif
@@ -585,9 +595,9 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
 #ifdef LOCK_DIR
         co_await UnlockDir();
 #else
-        if(global_flag)
-            co_await UnlockDir();
-        else
+        // if(global_flag)
+        //     co_await UnlockDir();
+        // else
             co_await UnlockSeg(seg_loc);
 #endif
         co_await sync_dir();
@@ -603,9 +613,9 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
 #ifdef LOCK_DIR
         co_await UnlockDir();
 #else
-        if(global_flag)
-            co_await UnlockDir();
-        else
+        // if(global_flag)
+        //     co_await UnlockDir();
+        // else
             co_await UnlockSeg(seg_loc);
 #endif
         co_await sync_dir();
@@ -642,9 +652,12 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
      * batch 实现方法 1：直接开多个协程分别调用 write 得到对应的 awaiter 放在一个 vector
      * 好处：实现比较简单不需要重写函数，实测是有效果的，不过线程数量上去以后效果不佳，不知道是否是这里的问题
      * 坏处：可能需要占用很多 RDMA Doorbell 寄存器导致争用的问题
+     * 希望实现使用 cas 来修改桶的深度，也许可以解决丢失 key 的问题。但是遇到 bug：在 cas_n 中 alloc_many 失败。是 per thread buffer 不够吗？
      */
     // std::vector<rdma_future> inflight_req;
     // inflight_req.reserve(BUCKET_PER_SEGMENT*3);
+    // uint64_t *cmp_val = (uint64_t*)alloc.alloc(BUCKET_PER_SEGMENT * 3 * sizeof(uint64_t));
+    // uint64_t *swap_val = (uint64_t*)alloc.alloc(BUCKET_PER_SEGMENT * 3 * sizeof(uint64_t));
     // for (uint64_t i = 0; i < BUCKET_PER_SEGMENT * 3; )
     // {
     //     int start_idx = i;
@@ -654,7 +667,11 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
     
     //         // Update local_depth&suffix
     //         cur_buc->local_depth = local_depth + 1;
-    //         inflight_req.emplace_back(conn->write(buc_ptr, rmr.rkey, cur_buc, sizeof(uint32_t), lmr->lkey));
+    //         cur_buc->suffix = seg_loc;
+    //         *(cmp_val+i) = (seg_loc << 32) | local_depth;
+    //         *(swap_val+i) = (seg_loc << 32) | (local_depth + 1);
+    //         // inflight_req.emplace_back(conn->write(buc_ptr, rmr.rkey, cur_buc, sizeof(uint32_t), lmr->lkey));
+    //         inflight_req.emplace_back(conn->cas_n(buc_ptr, rmr.rkey, *(cmp_val+i), *(swap_val+i)));
     //         i ++;
     //     }
     //     for(int j = 0; j < dma_default_workq_size && (start_idx+j) < i; j ++) {
@@ -799,15 +816,23 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         // 涉及目录扩容的时候，直接将旧目录的segs指针复制一份成为新的，也就是说指向同一个桶，且split_lock的状况是相同的
         // memcpy(dir->segs + dir_size, dir->segs, dir_size * sizeof(DirEntry));
         // 新逻辑：新的目录全空
-        memset(dir->segs + dir_size, 0, dir_size * sizeof(DirEntry));
+        // 这里也不需要重新写后面的 dir，初始化的时候已经预先分配好了所有的空间并且 memset 0 了
+        // memset(dir->segs + dir_size, 0, dir_size * sizeof(DirEntry));
         dir->segs[new_seg_loc].local_depth = local_depth + 1;
         dir->segs[new_seg_loc].split_lock = 0;
         dir->segs[new_seg_loc].seg_ptr = new_seg_ptr;
-        co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + dir_size * sizeof(DirEntry), rmr.rkey,
-                             dir->segs + dir_size, dir_size * sizeof(DirEntry), lmr->lkey);
+        co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + new_seg_loc * sizeof(DirEntry), rmr.rkey,
+                            &dir->segs[new_seg_loc], sizeof(DirEntry), lmr->lkey);
+        // co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + dir_size * sizeof(DirEntry), rmr.rkey,
+        //                      dir->segs + dir_size, dir_size * sizeof(DirEntry), lmr->lkey);
         // Update Global Depthx 最后更新全局深度，避免其它线程读到没有写完的 dir entry
-        dir->global_depth++;
-        co_await conn->write(rmr.raddr + sizeof(uint64_t), rmr.rkey, &dir->global_depth, sizeof(uint64_t), lmr->lkey);
+        // 但是这里不能用 write，要用 cas
+        // 失败不需要重试，说明另一个线程成功修改了全局深度
+        co_await conn->cas_n(rmr.raddr + sizeof(uint64_t), rmr.rkey, local_depth, local_depth + 1);
+
+
+        // dir->global_depth++;
+        // co_await conn->write(rmr.raddr + sizeof(uint64_t), rmr.rkey, &dir->global_depth, sizeof(uint64_t), lmr->lkey);
     }
     else
     {
@@ -836,9 +861,9 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
 #ifdef LOCK_DIR
     co_await UnlockDir();
 #else
-    if(global_flag)
-        co_await UnlockDir();
-    else
+    // if(global_flag)
+    //     co_await UnlockDir();
+    // else
         co_await UnlockSeg(seg_loc);
 #endif
 
