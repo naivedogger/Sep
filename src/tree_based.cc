@@ -377,7 +377,7 @@ Retry:
     uint64_t slot_val = 0;
 
     // 在插入操作开始前，保存一下 local depth，用于乐观并发控制机制。
-    uint32_t prev_ld = buc_data->local_depth;
+    uint32_t prev_ld = buc->local_depth;
 
     // uint64_t pattern_less_bucket = buc_flag ? pattern_1 : pattern_2;
     uintptr_t slot_ptr = FindEmptySlot(buc, buc_idx, buc_ptr, pattern_1, buc_data->local_depth, slot_val);
@@ -447,7 +447,7 @@ Retry:
 
     buc = buc_flag ? buc_data : buc_data + 2;
     // 在插入操作完成后，再检查下 local_depth 是否和之前相等，不相等就重试。
-    uint32_t cur_ld = buc_data->local_depth;
+    uint32_t cur_ld = buc->local_depth;
     // 可以在最后检查是不是正确的bucket，决定要不要重试insert
     // if (IsCorrectBucket(segloc, buc, pattern_1) == false)
     if (IsCorrectBucket(segloc, buc, pattern_1) == false || cur_ld != prev_ld)
@@ -464,6 +464,7 @@ Retry:
     // co_await search(key,value);
 }
 
+// 他这个 sync_dir 在本地并不是线程安全的呀
 task<> Client::sync_dir()
 {
     co_await conn->read(rmr.raddr + sizeof(uint64_t), rmr.rkey, &dir->global_depth, sizeof(uint64_t), lmr->lkey);
@@ -744,24 +745,23 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
 
     // Edit Directory pointer
     /* 因为使用了MSB和提前分配充足空间的Directory，所以可以直接往后增加Directory Entry*/
-    co_await sync_dir(); // Global Split必须同步一次Dir，来保证之前没有被同步的DirEntry不会被写到远端。
+    // co_await sync_dir(); // Global Split必须同步一次Dir，来保证之前没有被同步的DirEntry不会被写到远端。
+    DirEntry *tmp_entry = (DirEntry*)alloc.alloc(sizeof(DirEntry));
     if (global_flag)
     {
         log_err("[%lu:%lu:%lu] %lu update global_depth from:%lu to %lu",machine_id,cli_id,coro_id,this->op_key,dir->global_depth,dir->global_depth+1);
-        // Update Old_seg depth
-        // 这里是不是不需要 split_lock
-        dir->segs[seg_loc].split_lock = 0;
-        dir->segs[seg_loc].local_depth = local_depth + 1;
-        co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + seg_loc * sizeof(DirEntry), rmr.rkey,
-                             &dir->segs[seg_loc], sizeof(DirEntry), lmr->lkey);
-
+        log_err("[%lu:%lu:%lu] old seg_loc:%lu, new seg_loc:%lu",machine_id,cli_id,coro_id,seg_loc,new_seg_loc);
         // Extend Dir
         uint64_t dir_size = 1 << dir->global_depth;
-        dir->segs[new_seg_loc].local_depth = local_depth + 1;
-        dir->segs[new_seg_loc].split_lock = 0;
-        dir->segs[new_seg_loc].seg_ptr = new_seg_ptr;
+        // 注意这个地方会修改本地缓存的 dir！！！
+        // dir->segs[new_seg_loc].seg_ptr = new_seg_ptr;
+        // dir->segs[new_seg_loc].local_depth = local_depth + 1;
+        // dir->segs[new_seg_loc].split_lock = 0;
+        tmp_entry->seg_ptr = new_seg_ptr;
+        tmp_entry->local_depth = local_depth + 1;
+        tmp_entry->split_lock = 0;
         co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + new_seg_loc * sizeof(DirEntry), rmr.rkey,
-                            &dir->segs[new_seg_loc], sizeof(DirEntry), lmr->lkey);
+                            tmp_entry, sizeof(DirEntry), lmr->lkey);
         // co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + dir_size * sizeof(DirEntry), rmr.rkey,
         //                      dir->segs + dir_size, dir_size * sizeof(DirEntry), lmr->lkey);
         // Update Global Depth 最后更新全局深度，避免其它线程读到没有写完的 dir entry
@@ -769,6 +769,15 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         // 失败不需要重试，说明另一个线程成功修改了全局深度
         co_await conn->cas_n(rmr.raddr + sizeof(uint64_t), rmr.rkey, local_depth, local_depth + 1);
 
+        // Update Old_seg depth
+        // 后续再解锁
+        // dir->segs[seg_loc].split_lock = 1;
+        // dir->segs[seg_loc].local_depth = local_depth + 1;
+        tmp_entry->seg_ptr = seg_ptr;
+        tmp_entry->local_depth = local_depth + 1;
+        tmp_entry->split_lock = 1;
+        co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + seg_loc * sizeof(DirEntry), rmr.rkey,
+                            tmp_entry, sizeof(DirEntry), lmr->lkey);
 
         // dir->global_depth++;
         // co_await conn->write(rmr.raddr + sizeof(uint64_t), rmr.rkey, &dir->global_depth, sizeof(uint64_t), lmr->lkey);
@@ -780,23 +789,28 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         //笔记见备忘录
         // uint64_t stride = (1llu) << (dir->global_depth - local_depth);
         uint64_t cur_seg_loc;
-        for (uint64_t i = 0; i < 2; i++)
+        // 先写 new_seg_loc
+        for (int i = 1; i >= 0; i--)
         {
             // 不涉及目录扩容的时候，就是修改那些被影响到的指针，按照第LD位是否为1进行分配
             cur_seg_loc = (i << local_depth) | first_seg_loc;
-            if (i & 1)
-                dir->segs[cur_seg_loc].seg_ptr = new_seg_ptr;
-            else
-                dir->segs[cur_seg_loc].seg_ptr = seg_ptr;
-            dir->segs[cur_seg_loc].local_depth = local_depth + 1;
-            // 这里可以直接设置为0，首先dir上了一把大锁，其次一个seg同时只能被一个线程扩容
-            dir->segs[cur_seg_loc].split_lock = 0;
+            if (i & 1){
+                tmp_entry->seg_ptr = new_seg_ptr;
+                tmp_entry->split_lock = 0;
+            }
+            else{
+                tmp_entry->seg_ptr = seg_ptr;
+                tmp_entry->split_lock = 1;
+            }
+            tmp_entry->local_depth = local_depth + 1;
 
             // 这个地方不需要 全局的 dir 锁
             co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + cur_seg_loc * sizeof(DirEntry), rmr.rkey,
-                                 dir->segs + cur_seg_loc, sizeof(DirEntry), lmr->lkey);
+                                tmp_entry, sizeof(DirEntry), lmr->lkey);
         }
     }
+
+    co_await sync_dir();
 #ifdef LOCK_DIR
     co_await UnlockDir();
 #else
