@@ -308,18 +308,6 @@ int cnt = 0;
 task<> Client::insert(Slice *key, Slice *value)
 {
     cnt ++;
-    // int miss_match = 0;
-    // if(cnt == 59482)
-    // for(int i = 0; i < 1 << INIT_DEPTH; i ++) {
-    //     uintptr_t segptr = dir->segs[i].seg_ptr;
-    //     Bucket *buc_data = (Bucket *)alloc.alloc(4ul * sizeof(Bucket));
-    //     uintptr_t bucptr_1, bucptr_2;
-    //     bucptr_1 = segptr + get_buc_off(64);
-    //     auto rbuc1 = conn->read(bucptr_1, rmr.rkey, buc_data, 2 * sizeof(Bucket), lmr->lkey);
-    //     co_await std::move(rbuc1);
-    //     if(buc_data->suffix != i)
-    //         miss_match ++;
-    // }
     perf.start_perf();
     sum_cost.start_insert();
     alloc.ReSet(sizeof(Directory));
@@ -574,10 +562,7 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
     // 在新的设计中，已经对旧的 segment 上锁，不需要对 dir 上锁
     // 只是在 split 完成后需要判断下 global_flag，如果为真则 cas Global_depth (local_depth -> local_depth + 1)
     // cas 失败不需要重试，说明另一个线程也成功完成了 split，并且更新了 Global_depth
-    // if(global_flag)
-    //     tmp_res = co_await LockDir();
-    // else
-        tmp_res = co_await LockSeg(seg_loc);
+    tmp_res = co_await LockSeg(seg_loc);
     if (tmp_res)
 #endif
     {
@@ -595,10 +580,7 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
 #ifdef LOCK_DIR
         co_await UnlockDir();
 #else
-        // if(global_flag)
-        //     co_await UnlockDir();
-        // else
-            co_await UnlockSeg(seg_loc);
+        co_await UnlockSeg(seg_loc);
 #endif
         co_await sync_dir();
         sum_cost.end_split();
@@ -613,32 +595,12 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
 #ifdef LOCK_DIR
         co_await UnlockDir();
 #else
-        // if(global_flag)
-        //     co_await UnlockDir();
-        // else
-            co_await UnlockSeg(seg_loc);
+        co_await UnlockSeg(seg_loc);
 #endif
         co_await sync_dir();
         sum_cost.end_split();
         co_return 1;
     }
-    // 这里要去掉。。。因为前面自己设置成 1 了
-//     if (remote_entry->split_lock == 1)
-//     {
-// #ifdef LOCK_DIR
-//         co_await UnlockDir();
-// #else
-//         if(global_flag)
-//             co_await UnlockDir();
-//         else
-//             co_await UnlockSeg(seg_loc);
-// #endif
-//         // 后续可以考虑只 sync 部分需要的 entry
-//         co_await sync_dir();
-//         sum_cost.end_split();
-//         co_return 1;
-//     }
-
     sum_cost.add_split_cnt();
 
     // 可以改用更加细粒度的锁，只对目标 segment 对应的 split_lock 上锁即可
@@ -703,17 +665,12 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         co_await std::move(res);
     }
     // EOF：Batch 实现方法 2
-    // usleep(20);
 
     // 读取旧的segment
     Segment *new_seg = (Segment *)alloc.alloc(sizeof(Segment));
     uint64_t new_seg_ptr = ralloc.alloc(sizeof(Segment), true); //按八字节对齐
     uint64_t first_seg_loc = seg_loc & ((1ull << local_depth) - 1);
     uint64_t new_seg_loc = first_seg_loc | (1ull << local_depth);
-    // uint64_t raddrs[BUCKET_PER_SEGMENT*3];
-    // void* laddrs[BUCKET_PER_SEGMENT*3];
-    // rdma_future inflight_req[BUCKET_PER_SEGMENT*3];
-    // TODO:实现batch
     /***
      * Batch Read 实现方法 1，直接多个 post_send
      * 好处坏处与前面类似
@@ -785,19 +742,6 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
 
     co_await conn->write(new_seg_ptr, rmr.rkey, new_seg, sizeof(Segment), lmr->lkey);
 
-    // Allocate New Seg and Init header && write to server
-    // Segment *new_seg = (Segment *)alloc.alloc(sizeof(Segment));
-    // memset(new_seg, 0, sizeof(Segment));
-    // uint64_t new_seg_ptr = ralloc.alloc(sizeof(Segment), true); //按八字节对齐
-    // uint64_t first_seg_loc = seg_loc & ((1ull << local_depth) - 1);
-    // uint64_t new_seg_loc = first_seg_loc | (1ull << local_depth);
-    // for (uint64_t i = 0; i < BUCKET_PER_SEGMENT * 3; i++)
-    // {
-    //     new_seg->buckets[i].local_depth = local_depth + 1;
-    //     new_seg->buckets[i].suffix = new_seg_loc;
-    // }
-    // co_await conn->write(new_seg_ptr, rmr.rkey, new_seg, sizeof(Segment), lmr->lkey);
-
     // Edit Directory pointer
     /* 因为使用了MSB和提前分配充足空间的Directory，所以可以直接往后增加Directory Entry*/
     co_await sync_dir(); // Global Split必须同步一次Dir，来保证之前没有被同步的DirEntry不会被写到远端。
@@ -813,11 +757,6 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
 
         // Extend Dir
         uint64_t dir_size = 1 << dir->global_depth;
-        // 涉及目录扩容的时候，直接将旧目录的segs指针复制一份成为新的，也就是说指向同一个桶，且split_lock的状况是相同的
-        // memcpy(dir->segs + dir_size, dir->segs, dir_size * sizeof(DirEntry));
-        // 新逻辑：新的目录全空
-        // 这里也不需要重新写后面的 dir，初始化的时候已经预先分配好了所有的空间并且 memset 0 了
-        // memset(dir->segs + dir_size, 0, dir_size * sizeof(DirEntry));
         dir->segs[new_seg_loc].local_depth = local_depth + 1;
         dir->segs[new_seg_loc].split_lock = 0;
         dir->segs[new_seg_loc].seg_ptr = new_seg_ptr;
@@ -825,7 +764,7 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
                             &dir->segs[new_seg_loc], sizeof(DirEntry), lmr->lkey);
         // co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + dir_size * sizeof(DirEntry), rmr.rkey,
         //                      dir->segs + dir_size, dir_size * sizeof(DirEntry), lmr->lkey);
-        // Update Global Depthx 最后更新全局深度，避免其它线程读到没有写完的 dir entry
+        // Update Global Depth 最后更新全局深度，避免其它线程读到没有写完的 dir entry
         // 但是这里不能用 write，要用 cas
         // 失败不需要重试，说明另一个线程成功修改了全局深度
         co_await conn->cas_n(rmr.raddr + sizeof(uint64_t), rmr.rkey, local_depth, local_depth + 1);
@@ -861,45 +800,8 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
 #ifdef LOCK_DIR
     co_await UnlockDir();
 #else
-    // if(global_flag)
-    //     co_await UnlockDir();
-    // else
-        co_await UnlockSeg(seg_loc);
+    co_await UnlockSeg(seg_loc);
 #endif
-
-    // Move Data
-    // Segment *old_seg = (Segment *)alloc.alloc(sizeof(Segment));
-    // co_await MoveData(seg_ptr, new_seg_ptr, old_seg, new_seg);
-
-    // TODO: 检查一下下面这些的逻辑，感觉好像没有必要
-    // Free Move_Data Lock
-    // while (co_await LockDir())
-    // {
-    // }
-
-    // if (global_flag)
-    // {
-    //     dir->segs[seg_loc].split_lock = 0;
-    //     co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + seg_loc * sizeof(DirEntry), rmr.rkey,
-    //                          &(dir->segs[seg_loc].split_lock), sizeof(uint64_t), lmr->lkey);
-    //     dir->segs[new_seg_loc].split_lock = 0;
-    //     co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + new_seg_loc * sizeof(DirEntry), rmr.rkey,
-    //                          &(dir->segs[new_seg_loc].split_lock), sizeof(uint64_t), lmr->lkey);
-    // }
-    // else
-    // {
-    //     uint64_t stride =
-    //         (1llu) << (dir->global_depth - local_depth + 2); // 这里增加2，是为了给隐式置为1的部分entry解锁
-    //     uint64_t cur_seg_loc;
-    //     for (uint64_t i = 0; i < stride; i++)
-    //     {
-    //         cur_seg_loc = (i << local_depth) | first_seg_loc;
-    //         dir->segs[cur_seg_loc].split_lock = 0;
-    //         co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + cur_seg_loc * sizeof(DirEntry), rmr.rkey,
-    //                              &(dir->segs[cur_seg_loc].split_lock), sizeof(uint64_t), lmr->lkey);
-    //     }
-    // }
-    // co_await UnlockDir();
 
     sum_cost.end_split();
     co_return 0;
