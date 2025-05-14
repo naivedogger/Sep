@@ -810,6 +810,9 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         }
     }
 
+    // for now, we only support the Eventual Consistency of the locally-cached dir.
+    // a query could detect a stale read, by comparing LD in buckets (which is guarded by lock) with the LD stored in the corresponding dir entry.
+    // afterwards, it could either sync the entire dir(however not thread safe), or only reading a couple of dir entries.
     co_await sync_dir();
 #ifdef LOCK_DIR
     co_await UnlockDir();
