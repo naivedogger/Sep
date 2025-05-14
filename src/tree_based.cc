@@ -727,42 +727,60 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
     // 需要所有叶子的指针，因为超出了 fp2 能表示的范围。
     // 需要分配一个新的 segment，存放新的 “旧” segment，然后更新目录里的 ptr
     uint64_t new_local_depth = local_depth + 1;
+    // if(false) {
     if(new_local_depth - INIT_DEPTH >= (FP2_LEN + 1) && (new_local_depth - INIT_DEPTH) % (FP2_LEN + 1) == 0) {
         // 存放的就是一个叶子在远端的指针
         // 只需要读 key 的前 8 个字节就可以满足重分配的需求了
         uint64_t* leaves_buffer = (uint64_t*)alloc.alloc(BUCKET_PER_SEGMENT * 3 * SLOT_PER_BUCKET * sizeof(uint64_t));
         memset(leaves_buffer, 0, BUCKET_PER_SEGMENT * 3 * SLOT_PER_BUCKET * sizeof(uint64_t)); // 如果 alloc 的时候置了 0 那这里可以不要
+        // uint64_t key_[BUCKET_PER_SEGMENT * 3 * SLOT_PER_BUCKET];
         bool slot_not_empty[BUCKET_PER_SEGMENT * 3 * SLOT_PER_BUCKET];
         memset(slot_not_empty, 0, sizeof(slot_not_empty));
         // uint64_t ptr_leaves[BUCKET_PER_SEGMENT*3*SLOT_PER_BUCKET];
         // 应该是有 空的 slot
         for (uint64_t i = 0; i < SLOT_PER_BUCKET * BUCKET_PER_SEGMENT * 3; )
         {
-            int start_idx = i;
             std::vector<uint64_t> leaf_ptrs;
             std::vector<void*> buf_ptrs;
             leaf_ptrs.reserve(kReadOroMax);
             buf_ptrs.reserve(kReadOroMax);
             int leaf_cnt = 0;
+            // std::vector<rdma_future> inflight_req;
+            // inflight_req.reserve(kReadOroMax);
             for(; leaf_cnt < kReadOroMax && i < SLOT_PER_BUCKET * BUCKET_PER_SEGMENT * 3;) {
-                if(check_empty(new_seg->buckets[i / SLOT_PER_BUCKET].slots[i % SLOT_PER_BUCKET].fp2, seg_loc, local_depth)) {
+                int buc_id = i / SLOT_PER_BUCKET;
+                int slot_id = i % SLOT_PER_BUCKET;
+                if(*(uint64_t*)(&(new_seg->buckets[buc_id].slots[slot_id])) == 0 || check_empty(new_seg->buckets[buc_id].slots[slot_id].fp2, seg_loc, local_depth)) {
                     // 跳过空的槽
                     i ++;
                     continue;
                 }
-                leaf_ptrs.emplace_back(ralloc.ptr(new_seg->buckets[i / SLOT_PER_BUCKET].slots[i % SLOT_PER_BUCKET].offset)  + 2 * sizeof(uint64_t));
+                // 只需要取回 key 里的第一个字节。如果需要支持变长的话，那需要考虑 little-endian 的问题
+                leaf_ptrs.emplace_back(ralloc.ptr(new_seg->buckets[buc_id].slots[slot_id].offset)  + 2 * sizeof(uint64_t));
                 buf_ptrs.emplace_back((void*)(leaves_buffer + i)); // 需要检查下这个指针
+                // uint64_t leaf_remote = ralloc.ptr(new_seg->buckets[buc_id].slots[slot_id].offset);
+                // void* local_leaf_buf = (void*)(leaves_buffer + i * get_block_size(PREFECTH_FACTOR));
+                // inflight_req.emplace_back(conn->read(leaf_remote, rmr.rkey, local_leaf_buf, get_block_size(PREFECTH_FACTOR), lmr->lkey));
                 slot_not_empty[i] = true;
                 i ++;
                 leaf_cnt ++;
             }
             if(leaf_cnt > 0){
                 // read_batch 会导致 post_send 返回错误码 12。为啥啊啊啊啊
+                // 问题解决了，是因为前面忘记跳过 slot == 0 的那些空槽了。笑嘻了怎么这么蠢
                 auto res = conn->read_batch(leaf_ptrs, rmr.rkey, buf_ptrs, sizeof(uint64_t), lmr->lkey, leaf_cnt);
                 co_await std::move(res);
-                
+                // for(int j = 0; j < leaf_cnt && j < inflight_req.size(); j ++) {
+                //     co_await std::move(inflight_req[j]);
+                // }
             }
         }
+        // for(int i = 0; i < SLOT_PER_BUCKET * BUCKET_PER_SEGMENT * 3; i ++) {
+        //     assert(((KVBlock*)(leaves_buffer+i*64)) -> k_len == 8 || ((KVBlock*)(leaves_buffer+i*64)) -> k_len == 0);
+        // }
+        // for(int i = 0; i < SLOT_PER_BUCKET * BUCKET_PER_SEGMENT * 3; i ++) {
+        //     key_[i] = *(uint64_t*)(leaves_buffer + i * get_block_size(PREFECTH_FACTOR) + 2 * sizeof(uint64_t));
+        // }
         // TODO：将 slot 里的 fp2 更新；重新分配到新旧两个 segments，然后写旧 segment，改远端指向旧 seg 的指针（这一块可以在后面的循环搞）
         // 先实现 8 字节 key 的，后续还需要支持变长 key
         // 需要修改旧的表。这里直接异地更新吧。
@@ -795,6 +813,7 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
                     new_seg->buckets[buc_id].slots[slot_id].offset = 0;
                 }
             } else {
+                // 空的槽。new_old 本来就是全空，只需要把 new_seg 里的置空即可
                 new_seg->buckets[buc_id].slots[slot_id].fp = 0;
                 new_seg->buckets[buc_id].slots[slot_id].fp2 = 0;
                 new_seg->buckets[buc_id].slots[slot_id].offset = 0;
@@ -808,6 +827,8 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         // 注意这里先不要解锁和改变深度，统一在最后完成。
         tmp_entry->local_depth = local_depth;
         tmp_entry->split_lock = 1;
+        // 修改 seg_ptr 避免后续改回去
+        seg_ptr = new_old_seg_ptr;
         co_await conn->write(rmr.raddr + 2 * sizeof(uint64_t) + seg_loc * sizeof(DirEntry), rmr.rkey,
                             tmp_entry, sizeof(DirEntry), lmr->lkey);
     }
