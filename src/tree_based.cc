@@ -1021,7 +1021,14 @@ Retry_search:
     if (IsCorrectBucket(segloc, buc_data, pattern_1) == false ||
         IsCorrectBucket(segloc, buc_data + 2, pattern_1) == false)
     {
-        log_err("Wrong Bucket After Load");
+        // for debug
+        // Segment* tmp_seg = (Segment*)alloc.alloc(sizeof(Segment));
+        // co_await conn->read(segptr, rmr.rkey, tmp_seg, sizeof(Segment), lmr->lkey);
+        
+        // maybe it's possible to have incorrect buckets after load. The root cause is that,
+        // the local dir isn't up-to-date. After re-syncing the dir, this does not occur when
+        // querying another key from the same bucket.
+        log_err("Wrong Bucket After Load. segloc:%lu, buc1 LD:%lu, buc2 LD:%lu, dir LD:%lu", segloc, buc_data->local_depth, (buc_data+2)->local_depth, dir->segs[segloc].local_depth);
         auto slot_info = co_await search_on_resize(key, value);
         perf.push_search();
         co_return slot_info;
@@ -1040,7 +1047,7 @@ Retry_search:
         co_return std::make_tuple(slot_ptr, slot);
     }
     miss_count.fetch_add(1);
-    log_err("[%lu:%lu]No match:%lu,segloc:%lu,suffix:%lu,buc2:%lu,miss_cnt:%lu", cli_id, coro_id, *(uint64_t *)key->data, segloc, buc_data->suffix, bucidx_2, miss_count.load());
+    log_err("[%lu:%lu]No match:%lu,segloc:%lu,suffix:%u,buc2:%u,miss_cnt:%d", cli_id, coro_id, *(uint64_t *)key->data, segloc, buc_data->suffix, bucidx_2, miss_count.load());
     // for(int i = 0; i < SLOT_PER_BUCKET; i ++) {
     //     KVBlock* kv_block = (KVBlock*)alloc.alloc(sizeof(KVBlock));
     //     if(buc_data->slots[i].offset != 0) {
