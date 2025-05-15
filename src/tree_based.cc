@@ -1239,7 +1239,7 @@ task<> Client::update(Slice *key,Slice *value)
     Slice ret_value;
     ret_value.data = data;
     KVBlock *kv_block = InitKVBlock(key, value, &alloc);
-    uint64_t kvblock_len = key->len + value->len + sizeof(uint64_t) * 2;
+    uint64_t kvblock_len = 64;
     uint64_t kvblock_ptr = ralloc.alloc(kvblock_len);
     auto wkv = conn->write(kvblock_ptr, rmr.rkey, kv_block, kvblock_len, lmr->lkey);
     
@@ -1264,7 +1264,7 @@ Retry:
     auto [slot_ptr, slot] = co_await search(key, &ret_value);
     Slot *tmp = (Slot *)alloc.alloc(sizeof(Slot));
     tmp->fp = fp(pattern_1);
-    tmp->fp2 = ((Slot*)slot)->fp2;
+    tmp->fp2 = ((Slot*)(&slot))->fp2;
     tmp->offset = ralloc.offset(kvblock_ptr);
     if (slot_ptr != 0ull)
     {
