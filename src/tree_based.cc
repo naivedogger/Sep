@@ -677,24 +677,6 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
     uint64_t new_seg_ptr = ralloc.alloc(sizeof(Segment), true); //按八字节对齐
     uint64_t first_seg_loc = seg_loc & ((1ull << local_depth) - 1);
     uint64_t new_seg_loc = first_seg_loc | (1ull << local_depth);
-    /***
-     * Batch Read 实现方法 1，直接多个 post_send
-     * 好处坏处与前面类似
-     */
-    // inflight_req.clear();
-    // for(int i = 0; i < BUCKET_PER_SEGMENT * 3; ) {
-    //     int start_idx = i;
-    //     for(int j = 0; j < dma_default_workq_size && i < BUCKET_PER_SEGMENT * 3; j ++) {
-    //         buc_ptr = seg_ptr + i * sizeof(Bucket);
-    //         cur_buc = &((new_seg->buckets)[i]);
-    //         inflight_req.emplace_back(conn->read(buc_ptr, rmr.rkey, cur_buc, sizeof(Bucket), lmr->lkey));
-    //         i ++;
-    //     }
-    //     for(int j = 0; j < dma_default_workq_size && (start_idx+j) < i; j ++) {
-    //         co_await std::move(inflight_req[start_idx+j]);
-    //     }
-    // }
-    // EOF: Batch Read 实现方法 1
 
     /***
      * Batch Read 实现方法 2
@@ -722,7 +704,6 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         cur_buc->local_depth = local_depth + 1;
         cur_buc->suffix = new_seg_loc;
     }
-    // co_await conn->read_batch(raddrs, rmr.rkey, laddrs, sizeof(Bucket), lmr->lkey, BUCKET_PER_SEGMENT*3);
     
     // 需要所有叶子的指针，因为超出了 fp2 能表示的范围。
     // 需要分配一个新的 segment，存放新的 “旧” segment，然后更新目录里的 ptr
@@ -733,11 +714,8 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
         // 只需要读 key 的前 8 个字节就可以满足重分配的需求了
         uint64_t* leaves_buffer = (uint64_t*)alloc.alloc(BUCKET_PER_SEGMENT * 3 * SLOT_PER_BUCKET * sizeof(uint64_t));
         memset(leaves_buffer, 0, BUCKET_PER_SEGMENT * 3 * SLOT_PER_BUCKET * sizeof(uint64_t)); // 如果 alloc 的时候置了 0 那这里可以不要
-        // uint64_t key_[BUCKET_PER_SEGMENT * 3 * SLOT_PER_BUCKET];
         bool slot_not_empty[BUCKET_PER_SEGMENT * 3 * SLOT_PER_BUCKET];
         memset(slot_not_empty, 0, sizeof(slot_not_empty));
-        // uint64_t ptr_leaves[BUCKET_PER_SEGMENT*3*SLOT_PER_BUCKET];
-        // 应该是有 空的 slot
         for (uint64_t i = 0; i < SLOT_PER_BUCKET * BUCKET_PER_SEGMENT * 3; )
         {
             std::vector<uint64_t> leaf_ptrs;
@@ -745,8 +723,6 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
             leaf_ptrs.reserve(kReadOroMax);
             buf_ptrs.reserve(kReadOroMax);
             int leaf_cnt = 0;
-            // std::vector<rdma_future> inflight_req;
-            // inflight_req.reserve(kReadOroMax);
             for(; leaf_cnt < kReadOroMax && i < SLOT_PER_BUCKET * BUCKET_PER_SEGMENT * 3;) {
                 int buc_id = i / SLOT_PER_BUCKET;
                 int slot_id = i % SLOT_PER_BUCKET;
@@ -758,30 +734,15 @@ task<int> Client::Split(uint64_t seg_loc, uintptr_t seg_ptr, uint64_t local_dept
                 // 只需要取回 key 里的第一个字节。如果需要支持变长的话，那需要考虑 little-endian 的问题
                 leaf_ptrs.emplace_back(ralloc.ptr(new_seg->buckets[buc_id].slots[slot_id].offset)  + 2 * sizeof(uint64_t));
                 buf_ptrs.emplace_back((void*)(leaves_buffer + i)); // 需要检查下这个指针
-                // uint64_t leaf_remote = ralloc.ptr(new_seg->buckets[buc_id].slots[slot_id].offset);
-                // void* local_leaf_buf = (void*)(leaves_buffer + i * get_block_size(PREFECTH_FACTOR));
-                // inflight_req.emplace_back(conn->read(leaf_remote, rmr.rkey, local_leaf_buf, get_block_size(PREFECTH_FACTOR), lmr->lkey));
                 slot_not_empty[i] = true;
                 i ++;
                 leaf_cnt ++;
             }
             if(leaf_cnt > 0){
-                // read_batch 会导致 post_send 返回错误码 12。为啥啊啊啊啊
-                // 问题解决了，是因为前面忘记跳过 slot == 0 的那些空槽了。笑嘻了怎么这么蠢
                 auto res = conn->read_batch(leaf_ptrs, rmr.rkey, buf_ptrs, sizeof(uint64_t), lmr->lkey, leaf_cnt);
                 co_await std::move(res);
-                // for(int j = 0; j < leaf_cnt && j < inflight_req.size(); j ++) {
-                //     co_await std::move(inflight_req[j]);
-                // }
             }
         }
-        // for(int i = 0; i < SLOT_PER_BUCKET * BUCKET_PER_SEGMENT * 3; i ++) {
-        //     assert(((KVBlock*)(leaves_buffer+i*64)) -> k_len == 8 || ((KVBlock*)(leaves_buffer+i*64)) -> k_len == 0);
-        // }
-        // for(int i = 0; i < SLOT_PER_BUCKET * BUCKET_PER_SEGMENT * 3; i ++) {
-        //     key_[i] = *(uint64_t*)(leaves_buffer + i * get_block_size(PREFECTH_FACTOR) + 2 * sizeof(uint64_t));
-        // }
-        // TODO：将 slot 里的 fp2 更新；重新分配到新旧两个 segments，然后写旧 segment，改远端指向旧 seg 的指针（这一块可以在后面的循环搞）
         // 先实现 8 字节 key 的，后续还需要支持变长 key
         // 需要修改旧的表。这里直接异地更新吧。
         Segment* new_old_seg = (Segment*)alloc.alloc(sizeof(Segment));
@@ -1053,22 +1014,6 @@ Retry_search:
     // 每次重试的时候，会回到头部？？？？
     alloc.ReSet(sizeof(Directory));
 
-    // check buckets
-    // int miss_match = 0;
-    // if(cnt == 59482)
-    // for(int i = 0; i < 1 << INIT_DEPTH; i ++) {
-    //     alloc.ReSet(sizeof(Directory));
-    //     uintptr_t segptr = dir->segs[i].seg_ptr;
-    //     Bucket *buc_data = (Bucket *)alloc.alloc(4ul * sizeof(Bucket));
-    //     buc_data->slots[2].fp = 99;
-    //     uintptr_t bucptr_1, bucptr_2;
-    //     bucptr_1 = segptr + get_buc_off(0);
-    //     auto rbuc1 = conn->read(bucptr_1, rmr.rkey, buc_data, 2 * sizeof(Bucket), lmr->lkey);
-    //     co_await std::move(rbuc1);
-    //     if(buc_data->suffix != i)
-    //         miss_match ++;
-    // }
-
     // 1st RTT: Using RDMA doorbell batching to fetch two combined buckets
     uint64_t pattern_1, pattern_2;
     auto pattern = hash(key->data, key->len);
@@ -1102,17 +1047,6 @@ Retry_search:
     auto rbuc2 = conn->read(bucptr_2, rmr.rkey, buc_data + 2, 2 * sizeof(Bucket), lmr->lkey);
     co_await std::move(rbuc2);
     co_await std::move(rbuc1);
-    // std::move(rbuc2);
-    // std::move(rbuc1);
-    // usleep(100);
-    // 加上一个阻塞的逻辑
-    // if (dir->segs[segloc].local_depth != buc_data->local_depth ||
-    //     dir->segs[segloc].local_depth != (buc_data + 2)->local_depth)
-    // {
-    //     co_await sync_dir();
-    //     log_err("[%lu:%lu:%lu] op_key:%lu segloc:%lu buc_data->local_depth:%u (buc_data + 2)->local_depth:%u dir->segs[segloc].local_depth:%lu",machine_id,cli_id,coro_id,this->op_key,segloc,buc_data->local_depth,(buc_data + 2)->local_depth,dir->segs[segloc].local_depth);
-    //     goto Retry;
-    // }
     if (IsCorrectBucket(segloc, buc_data, pattern_1) == false ||
         IsCorrectBucket(segloc, buc_data + 2, pattern_1) == false)
     {
@@ -1133,9 +1067,6 @@ Retry_search:
     uintptr_t slot_ptr;
     uint64_t slot;
     char key_fp = fp(pattern_1);
-    // if(read_cnt == 9900000) {
-    //     log_err("No match cnt :%lu, slots overwritten :%lu", miss_count, empty_cnt);
-    // }
     if (co_await search_bucket(key, value, slot_ptr, slot, buc_data, bucptr_1, bucptr_2, pattern_1)){
         perf.push_search();
         sum_cost.push_level_cnt(1);
@@ -1143,21 +1074,6 @@ Retry_search:
     }
     miss_count.fetch_add(1);
     log_err("[%lu:%lu]No match:%lu,segloc:%lu,suffix:%u,buc2:%u,miss_cnt:%d", cli_id, coro_id, *(uint64_t *)key->data, segloc, buc_data->suffix, bucidx_2, miss_count.load());
-    // for(int i = 0; i < SLOT_PER_BUCKET; i ++) {
-    //     KVBlock* kv_block = (KVBlock*)alloc.alloc(sizeof(KVBlock));
-    //     if(buc_data->slots[i].offset != 0) {
-    //         co_await conn->read(ralloc.ptr(buc_data->slots[i].offset), rmr.rkey, kv_block, sizeof(KVBlock),lmr->lkey);
-    //     }
-    //     uint64_t pattern_1;
-    //     auto pattern = hash(kv_block->data, kv_block->k_len);
-    //     pattern_1 = (uint64_t)pattern;
-    //     uint64_t segloc = get_seg_loc(pattern_1, buc_data->local_depth);
-    //     if(segloc != buc_data->suffix)
-    //         miss_count ++;
-    // }
-    // if(read_cnt == 11800000) {
-    //     log_err("No match cnt :%lu, slots overwritten :%lu", miss_count, empty_cnt);
-    // }
     perf.push_search();
     sum_cost.push_level_cnt(1);
     co_return std::make_tuple(0ull, 0);
@@ -1177,8 +1093,6 @@ Retry:
     auto pattern = hash(key->data, key->len);
     pattern_1 = (uint64_t)pattern;
     pattern_2 = (uint64_t)(pattern >> 64);
-    // uint64_t segloc = get_seg_loc(pattern_1, dir->global_depth);
-    // uintptr_t segptr = dir->segs[segloc].seg_ptr;
 
     // 新的找空 slot 逻辑
     uint64_t segloc = get_first_seg_loc(pattern_1, dir->global_depth);
@@ -1294,8 +1208,6 @@ Retry:
     auto pattern = hash(key->data, key->len);
     pattern_1 = (uint64_t)pattern;
     pattern_2 = (uint64_t)(pattern >> 64);
-    // uint64_t segloc = get_seg_loc(pattern_1, dir->global_depth);
-    // uintptr_t segptr = dir->segs[segloc].seg_ptr;
 
     // 新的找空 slot 逻辑
     uint64_t segloc = get_first_seg_loc(pattern_1, dir->global_depth);
@@ -1339,8 +1251,6 @@ task<> Client::update(Slice *key,Slice *value)
 Retry:
     alloc.ReSet(sizeof(Directory)+kvblock_len);
     // 1st RTT: Using RDMA doorbell batching to fetch two combined buckets
-    // uint64_t segloc = get_seg_loc(pattern_1, dir->global_depth);
-    // uintptr_t segptr = dir->segs[segloc].seg_ptr;
 
     // 新的找空 slot 逻辑
     uint64_t segloc = get_first_seg_loc(pattern_1, dir->global_depth);
