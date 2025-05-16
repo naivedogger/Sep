@@ -468,12 +468,20 @@ Retry:
     // co_await search(key,value);
 }
 
+// std::mutex mtx;
+
 // 他这个 sync_dir 在本地并不是线程安全的呀
 task<> Client::sync_dir()
 {
-    co_await conn->read(rmr.raddr + sizeof(uint64_t), rmr.rkey, &dir->global_depth, sizeof(uint64_t), lmr->lkey);
-    co_await conn->read(rmr.raddr + sizeof(uint64_t) * 2, rmr.rkey, dir->segs,
-                        (1 << dir->global_depth) * sizeof(DirEntry), lmr->lkey);
+    // std::unique_lock<std::mutex> lock(mtx, std::defer_lock);
+    // if(lock.try_lock()){
+        co_await conn->read(rmr.raddr + sizeof(uint64_t), rmr.rkey, &dir->global_depth, sizeof(uint64_t), lmr->lkey);
+        co_await conn->read(rmr.raddr + sizeof(uint64_t) * 2, rmr.rkey, dir->segs,
+                            (1 << dir->global_depth) * sizeof(DirEntry), lmr->lkey);
+        // lock.unlock();
+    // } else {
+        // opportunistic
+    // }
 }
 
 bool Client::FindLessBucket(Bucket *buc1, Bucket *buc2, uint64_t key_1, uint64_t key_2, uint64_t local_depth)
@@ -1004,12 +1012,11 @@ task<> Client::UnlockSeg(int segloc) {
 }
 
 std::atomic<int> miss_count = 0;
-std::atomic<int> read_cnt = 0;
+std::atomic<int> hit_count = 0;
 
 task<std::tuple<uintptr_t, uint64_t>> Client::search(Slice *key, Slice *value)
 {
     perf.start_perf();
-    read_cnt ++;
 Retry_search:
     // 每次重试的时候，会回到头部？？？？
     alloc.ReSet(sizeof(Directory));
@@ -1070,10 +1077,11 @@ Retry_search:
     if (co_await search_bucket(key, value, slot_ptr, slot, buc_data, bucptr_1, bucptr_2, pattern_1)){
         perf.push_search();
         sum_cost.push_level_cnt(1);
+        hit_count.fetch_add(1);
         co_return std::make_tuple(slot_ptr, slot);
     }
     miss_count.fetch_add(1);
-    log_err("[%lu:%lu]No match:%lu,segloc:%lu,suffix:%u,buc2:%u,miss_cnt:%d", cli_id, coro_id, *(uint64_t *)key->data, segloc, buc_data->suffix, bucidx_2, miss_count.load());
+    log_err("[%lu:%lu]No match:%lu,miss_cnt:%d,hit_cnt:%d", cli_id, coro_id, *(uint64_t *)key->data, miss_count.load(), hit_count.load());
     perf.push_search();
     sum_cost.push_level_cnt(1);
     co_return std::make_tuple(0ull, 0);

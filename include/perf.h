@@ -7,8 +7,8 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
-#define USE_PERF
-#define USE_SUM_COST
+// #define USE_PERF
+// #define USE_SUM_COST
 
 struct Perf
 {
@@ -69,9 +69,9 @@ struct Perf
 
     void print(uint64_t cli_id,uint64_t coro_id){
 #ifdef USE_PERF
-        std::string insert_file_name = "insert_lat" + std::to_string(cli_id) + std::to_string(coro_id)+".txt";
+        std::string insert_file_name = "lat/insert_lat" + std::to_string(cli_id) + std::to_string(coro_id)+".txt";
         to_file(insert_file_name.c_str(),insert_lat);
-        std::string search_file_name = "search_lat" + std::to_string(cli_id) + std::to_string(coro_id)+".txt";
+        std::string search_file_name = "lat/search_lat" + std::to_string(cli_id) + std::to_string(coro_id)+".txt";
         to_file(search_file_name.c_str(),search_lat);
 #endif
     }
