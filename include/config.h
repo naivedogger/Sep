@@ -17,8 +17,8 @@ struct Config
     uint64_t num_op;
     uint64_t read_size;
     uint64_t load_num;
+    
     char work_load; // YCSB : a,b,c,d; e有scan,f有RMW，暂时不弄了
-
     // Internel States For YCSB
     uint64_t pattern_type; // Seq : 0 , Uniform : 1 , Zipfian : 2 , Latest : 3
     double insert_frac;
@@ -30,7 +30,7 @@ struct Config
     {
         cmdline::parser cmd_parser;
         cmd_parser.add("server", 'a', "Is a server or client");
-        cmd_parser.add<std::string>("server_ip", 'b', "IP address of server", false);
+        cmd_parser.add<std::string>("server_ip", 'b', "IP address of server", false, "192.169.1.4");
         cmd_parser.add<uint64_t>("num_cli", 'c', "Number of client", false, 4, cmdline::range(1, 80));
         cmd_parser.add<uint64_t>("num_machine", 'd', "Number of client", false, 4, cmdline::range(1, 80));
         cmd_parser.add<uint64_t>("gid_idx", 'e', "gid index");

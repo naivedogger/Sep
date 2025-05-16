@@ -17,9 +17,14 @@ then
 else
     cd "build"
     echo "machine" $1
+    frac_i=0.0
+    frac_r=1.0
+    frac_u=0.0
+    frac_d=0.0
+    echo "fractions of each operation: insert" $frac_i "read" $frac_r "update" $frac_u "delete" $frac_d
 
     for num_cli in `seq $2 $2`;do
-        for num_coro in `seq 1 $3`;do
+        for num_coro in `seq $3 $3`;do
             for load_num in 60000000;do
                 echo "num_cli" $num_cli "num_coro" $num_coro "load_num" $load_num
                 # ./ser_cli_var_kv \
@@ -31,10 +36,10 @@ else
                 --load_num $load_num \
                 --num_op 60000000 \
                 --pattern_type 0 \
-                --insert_frac 0.0 \
-                --read_frac   0.0 \
-                --update_frac  1.0 \
-                --delete_frac  0.0 \
+                --insert_frac $frac_i \
+                --read_frac   $frac_r \
+                --update_frac $frac_u \
+                --delete_frac $frac_d \
                 --read_size     64
             done 
         done
