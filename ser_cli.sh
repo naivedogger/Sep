@@ -13,21 +13,21 @@ then
     ./ser_cli --server \
     --gid_idx 1 \
     --max_coro 256 --cq_size 64 \
-    --mem_size 81268055040
+    --mem_size 91268055040
 else
     cd "build"
     # 0: sequential, 1: uniformly, 2: zipfian, 3: lastest
-    type_pattern=0
+    type_pattern=1
     echo "machine" $1 "pattern type" $type_pattern
-    frac_i=1.0
-    frac_r=0.0
+    frac_i=0.0
+    frac_r=1.0
     frac_u=0.0
     frac_d=0.0
     echo "fractions of each operation: insert" $frac_i "read" $frac_r "update" $frac_u "delete" $frac_d
 
     for num_cli in `seq $2 $2`;do
         for num_coro in `seq $3 $3`;do
-            for load_num in 10000000;do
+            for load_num in 100000000;do
                 echo "num_cli" $num_cli "num_coro" $num_coro "load_num" $load_num
                 # ./ser_cli_var_kv \
                 ./ser_cli \

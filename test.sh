@@ -15,10 +15,10 @@ if [ ! -f "$config_file" ]; then
     exit 1
 fi
 
-for op_num in 10000000 20000000 40000000 60000000 80000000 100000000; do
+for op_num in 20000000 40000000 60000000 80000000 100000000; do
     sed -i "s/ *for load_num in [0-9]\+/            for load_num in $op_num/" "$config_file"
     # 循环修改 type_pattern 的值为 0、1、2、3
-    for type_pattern in 0 1 2 3; do
+    for type_pattern in 0 1 2; do
         # 修改 type_pattern 的值
         sed -i "s/^ *type_pattern=.*/    type_pattern=$type_pattern/" "$config_file"
         
@@ -27,17 +27,18 @@ for op_num in 10000000 20000000 40000000 60000000 80000000 100000000; do
                 base_name="results/"$op_num"/sequential"
                 ;;
             1)
-                base_name="results/"$op_num"uniform"
+                base_name="results/"$op_num"/uniform"
                 ;;
             2)
-                base_name="results/"$op_num"skewed"
+                base_name="results/"$op_num"/skewed"
                 ;;
             3)
-                base_name="results/"$op_num"latest"
+                base_name="results/"$op_num"/latest"
                 ;;
         esac
         
-        for workload in 0 1 2; do
+        for workload in 0 1; do
+            # 好蠢为什么会跑 skewed 的 delete 和 insert 啊
             # 根据 workload 的值，设置其中一个变量为 1
             # 初始化所有变量为 0
             sed -i "s/^ *frac_i=.*/    frac_i=0.0/" "$config_file"
@@ -46,12 +47,9 @@ for op_num in 10000000 20000000 40000000 60000000 80000000 100000000; do
             sed -i "s/^ *frac_d=.*/    frac_d=0.0/" "$config_file"
             case $workload in
                 0)
-                    sed -i "s/^ *frac_i=.*/    frac_i=1.0/" "$config_file"
-                    ;;
-                1)
                     sed -i "s/^ *frac_r=.*/    frac_r=1.0/" "$config_file"
                     ;;
-                2)
+                1)
                     sed -i "s/^ *frac_u=.*/    frac_u=1.0/" "$config_file"
                     ;;
             esac
@@ -59,13 +57,10 @@ for op_num in 10000000 20000000 40000000 60000000 80000000 100000000; do
             # 创建对应的文件夹
             case $workload in
                 0)
-                    folder_name=$base_name"_insert"
+                    folder_name=$base_name"/_read"
                     ;;
                 1)
-                    folder_name=$base_name"_read"
-                    ;;
-                2)
-                    folder_name=$base_name"_update"
+                    folder_name=$base_name"/_update"
                     ;;
             esac
             
@@ -79,6 +74,7 @@ for op_num in 10000000 20000000 40000000 60000000 80000000 100000000; do
             
             # 运行程序
             for ((cli_num=1; cli_num<=16; cli_num*=2)); do
+                # for coro_num in 1 3; do
                 for coro_num in 1 3; do
                     python3 ./run.py 1 client $cli_num $coro_num
                     pwd
