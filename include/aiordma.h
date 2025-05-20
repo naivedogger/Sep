@@ -38,8 +38,8 @@ const int dma_default_workq_size = 64;
 const int dma_default_inv_buf_size = 128;
 const int dma_tempmp_mmap_name = 114514;
 // 考虑到 MTT 通常是 2K 左右，最小操作粒度通常是 8 字节
-const int kReadOroMax = 64;
-const int kWriteOroMax = 64;
+const int kReadOroMax = 16;
+const int kWriteOroMax = 16;
 
 using rdma_dmmr = std::tuple<ibv_dm *, ibv_mr *>;
 

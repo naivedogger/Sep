@@ -20,8 +20,8 @@ coro_num = args.coro_num
 
 # Define the connection information for each server
 servers = [
-    {'host': '192.169.1.4', 'user': 'hyy'},
     {'host': '192.169.1.15', 'user': 'hyy'},
+    {'host': '192.169.1.4', 'user': 'hyy'},
     #{'host': '192.168.1.52', 'user': 'xxx', 'password': 'xxx'},
     #{'host': '192.168.1.53', 'user': 'xxx', 'password': 'xxx'},
     #{'host': '192.168.1.11', 'user': 'xxx', 'password': 'xxx'},

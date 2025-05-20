@@ -17,11 +17,11 @@ then
 else
     cd "build"
     # 0: sequential, 1: uniformly, 2: zipfian, 3: lastest
-    type_pattern=1
+    type_pattern=2
     echo "machine" $1 "pattern type" $type_pattern
     frac_i=0.0
-    frac_r=1.0
-    frac_u=0.0
+    frac_r=0.0
+    frac_u=1.0
     frac_d=0.0
     echo "fractions of each operation: insert" $frac_i "read" $frac_r "update" $frac_u "delete" $frac_d
 
@@ -31,7 +31,7 @@ else
                 echo "num_cli" $num_cli "num_coro" $num_coro "load_num" $load_num
                 # ./ser_cli_var_kv \
                 ./ser_cli \
-                --server_ip 192.169.1.4 --num_machine $4 --num_cli $num_cli --num_coro $num_coro \
+                --server_ip 192.169.1.15 --num_machine $4 --num_cli $num_cli --num_coro $num_coro \
                 --gid_idx 1 \
                 --max_coro 256 --cq_size 64 \
                 --machine_id $1  \

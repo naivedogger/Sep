@@ -15,7 +15,8 @@ if [ ! -f "$config_file" ]; then
     exit 1
 fi
 
-for op_num in 20000000 40000000 60000000 80000000 100000000; do
+for op_num in 10000000 60000000 80000000 100000000; do
+# for op_num in 80000000; do
     sed -i "s/ *for load_num in [0-9]\+/            for load_num in $op_num/" "$config_file"
     # 循环修改 type_pattern 的值为 0、1、2、3
     for type_pattern in 0 1 2; do
@@ -73,12 +74,17 @@ for op_num in 20000000 40000000 60000000 80000000 100000000; do
             echo "-----------------------------"
             
             # 运行程序
-            for ((cli_num=1; cli_num<=16; cli_num*=2)); do
+            for ((cli_num=16; cli_num>=2; cli_num-=2)); do
                 # for coro_num in 1 3; do
-                for coro_num in 1 3; do
+                for coro_num in 1 3 4; do
+                    # 如果存在先删除
+                    rm -rf "./build/lat".
+                    # 创建新的 lat 文件夹
+                    mkdir -p "./build/lat"
                     python3 ./run.py 1 client $cli_num $coro_num
                     pwd
                     mv "out.txt" "$folder_name/out_tree_$cli_num"_"$coro_num.txt"
+                    mv "./build/lat" "$folder_name/lat"_"$cli_num"_"$coro_num"
                 done
             done
         done
