@@ -29,8 +29,8 @@ const char rdma_default_host[] = "127.0.0.1";
 const int rdma_default_port = 10002;
 const int rdma_default_max_coros = 256;
 // 目前把 batch 大小调整到 256 之后发现 post send 会返回错误码 12，把这个调大 4 倍试试。
-// const int rdma_default_tempmp_size = 1 << 26; // 64M
-const int rdma_default_tempmp_size = 1 << 28; // 256M
+const int rdma_default_tempmp_size = 1 << 26; // 64M
+// const int rdma_default_tempmp_size = 1 << 28; // 256M
 const int rdma_sock_recv_buf_size = 128;
 const int rdma_max_wc_per_poll = 8;
 const int rdma_max_pending_tasks = 16;
@@ -38,8 +38,8 @@ const int dma_default_workq_size = 64;
 const int dma_default_inv_buf_size = 128;
 const int dma_tempmp_mmap_name = 114514;
 // 考虑到 MTT 通常是 2K 左右，最小操作粒度通常是 8 字节
-const int kReadOroMax = 16;
-const int kWriteOroMax = 16;
+const int kReadOroMax = 20;
+const int kWriteOroMax = 20;
 
 using rdma_dmmr = std::tuple<ibv_dm *, ibv_mr *>;
 

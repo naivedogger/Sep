@@ -3,3 +3,4 @@
 /build
 !*space*.txt
 /results
+/output

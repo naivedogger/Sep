@@ -58,6 +58,9 @@ Server::Server(Config &config) : dev(nullptr, 1, config.gid_idx), ser(dev)
     ser.start_serve();
 }
 
+static int size_cur = sizeof(CurSeg);
+static int size_main = MAX_MAIN_SIZE;
+
 void Server::Init()
 {
     // Set MainTable to zero

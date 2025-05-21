@@ -21,18 +21,15 @@
 #define ORDERED_INSERT
 Config config;
 uint64_t load_num;
-// using ClientType = FASTSHIFT::Client;
-// using ServerType = FASTSHIFT::Server;
-// using Slice = FASTSHIFT::Slice;
-using ClientType = TREEBASED::Client;
-using ServerType = TREEBASED::Server;
-using Slice = TREEBASED::Slice;
+// using ClientType = TREEBASED::Client;
+// using ServerType = TREEBASED::Server;
+// using Slice = TREEBASED::Slice;
 // using ClientType = RACE::Client;
 // using ServerType = RACE::Server;
 // using Slice = RACE::Slice;
-// using ClientType = SEPHASH::Client;
-// using ServerType = SEPHASH::Server;
-// using Slice = SEPHASH::Slice;
+using ClientType = SEPHASH::Client;
+using ServerType = SEPHASH::Server;
+using Slice = SEPHASH::Slice;
 
 inline uint64_t GenKey(uint64_t key)
 {

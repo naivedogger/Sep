@@ -13,11 +13,11 @@ then
     ./ser_cli --server \
     --gid_idx 1 \
     --max_coro 256 --cq_size 64 \
-    --mem_size 91268055040
+    --mem_size 81268055040
 else
     cd "build"
     # 0: sequential, 1: uniformly, 2: zipfian, 3: lastest
-    type_pattern=2
+    type_pattern=1
     echo "machine" $1 "pattern type" $type_pattern
     frac_i=0.0
     frac_r=0.0
@@ -36,7 +36,7 @@ else
                 --max_coro 256 --cq_size 64 \
                 --machine_id $1  \
                 --load_num $load_num \
-                --num_op 10000000 \
+                --num_op 1000000 \
                 --pattern_type $type_pattern \
                 --insert_frac $frac_i \
                 --read_frac   $frac_r \

@@ -108,16 +108,16 @@ Server::Server(Config &config) : dev(nullptr, 1, config.gid_idx), ser(dev)
     memset(dir, 0, sizeof(Directory));
     Init(dir);
     log_err("init");
-    auto wait_exit = [&]() {
-        // getchar();
-        std::cin.get(); // 等待用户输入
-        // 在这里添加你停止服务器的代码
-        ser.stop_serve();
-        std::cout << "Exiting..." << std::endl;
-    };
-    std::thread th(wait_exit);
+    // auto wait_exit = [&]() {
+    //     // getchar();
+    //     std::cin.get(); // 等待用户输入
+    //     // 在这里添加你停止服务器的代码
+    //     ser.stop_serve();
+    //     std::cout << "Exiting..." << std::endl;
+    // };
+    // std::thread th(wait_exit);
     ser.start_serve();
-    th.join();
+    // th.join();
 }
 
 void Server::Init(Directory *dir)
