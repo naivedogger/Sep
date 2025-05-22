@@ -328,6 +328,7 @@ task<> Client::insert(Slice *key, Slice *value)
 #endif
     uint64_t retry_cnt = 0;
 Retry:
+    sum_cost.start_retry();
     // log_err("[%lu:%lu:%lu] op_key:%lu",machine_id,cli_id,coro_id,this->op_key);
     alloc.ReSet(sizeof(Directory) + kvblock_len);
     retry_cnt++;
@@ -337,8 +338,10 @@ Retry:
 
     // 新的找空 slot 逻辑
     // 重试的时候会读到新的 ptr
+    sum_cost.start_traverse();
     uint64_t segloc = get_first_seg_loc(pattern_1, dir->global_depth);
     uintptr_t segptr = dir->segs[segloc].seg_ptr;
+    sum_cost.end_traverse();
 
     // Compute two bucket location
     uint64_t bucidx_1, bucidx_2; // calculate bucket idx for each key
@@ -371,10 +374,13 @@ Retry:
         // sizeof(DirEntry), lmr->lkey);
         co_await sync_dir();
         // log_err("[%lu:%lu:%lu] op_key:%lu segloc:%lu buc_data->local_depth:%u (buc_data + 2)->local_depth:%u dir->segs[segloc].local_depth:%lu",machine_id,cli_id,coro_id,this->op_key,segloc,buc_data->local_depth,(buc_data + 2)->local_depth,dir->segs[segloc].local_depth);
+        sum_cost.end_retry();
         goto Retry;
     }
 
+    sum_cost.start_traverse();
     bool buc_flag = FindLessBucket(buc_data, buc_data + 2, pattern_1, pattern_2, buc_data->local_depth);
+    sum_cost.end_traverse();
     uint64_t buc_idx = buc_flag ? bucidx_1 : bucidx_2;
     Bucket *buc = buc_flag ? buc_data : buc_data + 2;
     uintptr_t buc_ptr = buc_flag ? bucptr_1 : bucptr_2;
@@ -384,7 +390,9 @@ Retry:
     uint32_t prev_ld = buc->local_depth;
 
     // uint64_t pattern_less_bucket = buc_flag ? pattern_1 : pattern_2;
+    sum_cost.start_traverse();
     uintptr_t slot_ptr = FindEmptySlot(buc, buc_idx, buc_ptr, pattern_1, buc_data->local_depth, slot_val);
+    sum_cost.end_traverse();
 
     if (slot_ptr == 0ul)
     {
@@ -404,6 +412,7 @@ Retry:
         // Slot* slot_data = (Slot*) alloc.alloc(sizeof(Slot));
         // co_await conn->read(slot_ptr, rmr.rkey, slot_data, sizeof(Slot), lmr->lkey);
         // log_err("[%lu:%lu:%lu] op_key:%lu slot_val:%lu fail to cas at slot_ptr:%lx, pre_val:%lx",machine_id,cli_id,coro_id,this->op_key,*(uint64_t*)slot_data,slot_ptr,pre_val);
+        sum_cost.end_retry();
         goto Retry;
     }
 
@@ -420,6 +429,8 @@ Retry:
     // 看下这里的bucket有没有写成功
 
     // Check Dupulicate-key
+    // no need to check the slot that we just inserted
+    sum_cost.start_traverse();
     for (uint64_t round = 0; round < 4; round++)
     {
         buc = buc_data + round;
@@ -448,6 +459,7 @@ Retry:
             }
         }
     }
+    sum_cost.end_traverse();
 
     buc = buc_flag ? buc_data : buc_data + 2;
     // 在插入操作完成后，再检查下 local_depth 是否和之前相等，不相等就重试。
@@ -459,6 +471,7 @@ Retry:
         log_err("[%lu:%lu:%lu] op_key:%lu segloc:%lu wrong bucket",machine_id,cli_id,coro_id,this->op_key,segloc);
         co_await conn->cas_n(slot_ptr, rmr.rkey, *(uint64_t *)tmp, slot_val);
         co_await sync_dir();
+        sum_cost.end_retry();
         goto Retry;
     }
 
@@ -475,10 +488,12 @@ task<> Client::sync_dir()
 {
     // std::unique_lock<std::mutex> lock(mtx, std::defer_lock);
     // if(lock.try_lock()){
+    // sum_cost.start_split();
         co_await conn->read(rmr.raddr + sizeof(uint64_t), rmr.rkey, &dir->global_depth, sizeof(uint64_t), lmr->lkey);
         co_await conn->read(rmr.raddr + sizeof(uint64_t) * 2, rmr.rkey, dir->segs,
                             (1 << dir->global_depth) * sizeof(DirEntry), lmr->lkey);
-        // lock.unlock();
+    // sum_cost.end_split();
+                            // lock.unlock();
     // } else {
         // opportunistic
     // }
@@ -521,7 +536,7 @@ uintptr_t Client::FindEmptySlot(Bucket *buc, uint64_t buc_idx, uintptr_t buc_ptr
     }
     for (uint64_t i = 0; i < SLOT_PER_BUCKET; i++)
     {
-        if (*(uint64_t *)(&over_buc->slots[i]) == 0|| check_empty(over_buc->slots[i].fp2, key, local_depth))
+        if (*(uint64_t *)(&over_buc->slots[i]) == 0 || check_empty(over_buc->slots[i].fp2, key, local_depth))
         {
             slot_val = *(uint64_t *)(&over_buc->slots[i]);
             return over_buc_ptr + sizeof(uint64_t) * (i + 1);

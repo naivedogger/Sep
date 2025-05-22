@@ -86,12 +86,16 @@ struct SumCost
     double merge_time = 0;
     double split_time = 0;
     double insert_time = 0;
+    double traverse_time = 0;
+    double retry_time = 0;
     std::vector<uint64_t> retry_cnt;
     std::vector<uint64_t> level_cnt;
 
     std::chrono::high_resolution_clock::time_point merge_start;
     std::chrono::high_resolution_clock::time_point split_start;
     std::chrono::high_resolution_clock::time_point insert_start;
+    std::chrono::high_resolution_clock::time_point traverse_start;
+    std::chrono::high_resolution_clock::time_point retry_start;
     
 
     void init(){
@@ -113,6 +117,34 @@ struct SumCost
     void push_level_cnt(uint64_t level){
 #ifdef USE_SUM_COST
         level_cnt.emplace_back(level);
+#endif
+    }
+
+    void start_retry(){
+#ifdef USE_SUM_COST
+        retry_start = std::chrono::high_resolution_clock::now();
+#endif
+    }
+
+    void end_retry(){
+#ifdef USE_SUM_COST
+        auto end = std::chrono::high_resolution_clock::now();
+        double duration = std::chrono::duration<double, std::micro>(end - retry_start).count();
+        retry_time += duration;
+#endif
+    }
+
+    void start_traverse(){
+#ifdef USE_SUM_COST
+        traverse_start = std::chrono::high_resolution_clock::now();
+#endif
+    }
+
+    void end_traverse(){   
+#ifdef USE_SUM_COST
+        auto end = std::chrono::high_resolution_clock::now();
+        double duration = std::chrono::duration<double, std::micro>(end - traverse_start).count();
+        traverse_time += duration;
 #endif
     }
 
@@ -184,7 +216,7 @@ struct SumCost
 
     void print(uint64_t cli_id,uint64_t coro_id){
 #ifdef USE_SUM_COST
-        printf("merge_cnt:%ld, merge_time:%lf, split_cnt:%ld, split_time:%lf, insert_time:%lf\n",merge_cnt,merge_time,split_cnt,split_time,insert_time);
+        printf("traverse_time:%lf, retry_time:%lf, merge_cnt:%ld, merge_time:%lf, split_cnt:%ld, split_time:%lf, insert_time:%lf\n",traverse_time,retry_time,merge_cnt,merge_time,split_cnt,split_time,insert_time);
         
         std::string insert_file_name = "./lat/retry_cnt" + std::to_string(cli_id) + std::to_string(coro_id)+".txt";
         to_file(insert_file_name.c_str(),retry_cnt);

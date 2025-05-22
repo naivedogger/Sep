@@ -4,6 +4,8 @@ set -e
 
 SRC="test/ser_cli.cc"
 BACKUP="test/ser_cli.cc.bak"
+REMOTE="192.169.1.6"
+REMOTE_PATH="/home/hyy/TBEH/Sep"
 
 cp $SRC $BACKUP
 
@@ -14,14 +16,11 @@ declare -A STRUCTS=(
 )
 
 for mode in tree sep race; do
-# for mode in tree; do
     # 1. 切换 using
     cp $BACKUP $SRC
-    # 注释掉所有 using
     sed -i 's/^\(using ClientType = .*\)$/\/\/ \1/' $SRC
     sed -i 's/^\(using ServerType = .*\)$/\/\/ \1/' $SRC
     sed -i 's/^\(using Slice = .*\)$/\/\/ \1/' $SRC
-    # 打开目标结构
     case $mode in
         race)
             sed -i 's/^\/\/ using ClientType = RACE::Client;/using ClientType = RACE::Client;/' $SRC
@@ -40,9 +39,10 @@ for mode in tree sep race; do
             ;;
     esac
 
-    # 2. 编译
+    # 2. 编译并同步 build 到远端
     cd ./build
     make ser_cli
+    rsync -avz ./ "$REMOTE:$REMOTE_PATH/build/"
 
     # 2.5. 重启 server
     ulimit -s unlimited
@@ -52,23 +52,23 @@ for mode in tree sep race; do
     cd ../
 
     # 3. 运行原有测试流程
-    # 你原有的测试流程（for op_num ...）整体包在这里
-    # ------- 你的原有流程开始 -------
     config_file="ser_cli.sh"
     if [ ! -f "$config_file" ]; then
         echo "配置文件 $config_file 不存在！"
         exit 1
     fi
 
-    for op_num in 40000000; do
+    for op_num in 60000000; do
         sed -i "s/ *for load_num in [0-9]\+/            for load_num in $op_num/" "$config_file"
+        rsync -avz "$config_file" "$REMOTE:$REMOTE_PATH/ser_cli.sh"
         for type_pattern in 0; do
             sed -i "s/^ *type_pattern=.*/    type_pattern=$type_pattern/" "$config_file"
+            rsync -avz "$config_file" "$REMOTE:$REMOTE_PATH/ser_cli.sh"
             case $type_pattern in
-                0) base_name="results_${mode}/$op_num/sequential" ;;
-                1) base_name="results_${mode}/$op_num/uniform" ;;
-                2) base_name="results_${mode}/$op_num/skewed" ;;
-                3) base_name="results_${mode}/$op_num/latest" ;;
+                0) base_name="results_2CN_${mode}/$op_num/sequential" ;;
+                1) base_name="results_2CN_${mode}/$op_num/uniform" ;;
+                2) base_name="results_2CN_${mode}/$op_num/skewed" ;;
+                3) base_name="results_2CN_${mode}/$op_num/latest" ;;
             esac
 
             for workload in 2; do
@@ -81,6 +81,8 @@ for mode in tree sep race; do
                     1) sed -i "s/^ *frac_u=.*/    frac_u=1.0/" "$config_file" ;;
                     2) sed -i "s/^ *frac_i=.*/    frac_i=1.0/" "$config_file" ;;
                 esac
+                rsync -avz "$config_file" "$REMOTE:$REMOTE_PATH/ser_cli.sh"
+                sleep 5
 
                 case $workload in
                     0) folder_name=$base_name"/_read" ;;
@@ -93,9 +95,9 @@ for mode in tree sep race; do
                 cat "$config_file"
                 echo "-----------------------------"
 
-                for ((cli_num=16; cli_num>=1; cli_num/=2)); do
+                for ((cli_num=10; cli_num>=1; cli_num-=1)); do
                     for coro_num in 3; do
-                        python3 ./run.py 1 client $cli_num $coro_num
+                        python3 ./run.py 2 client $cli_num $coro_num
                         pwd
                         mv "out.txt" "$folder_name/out_${mode}_$cli_num"_"$coro_num.txt"
                     done
@@ -103,9 +105,8 @@ for mode in tree sep race; do
             done
         done
     done
-    # ------- 你的原有流程结束 -------
 done
 
 mv $BACKUP $SRC
 
-echo "所有配置修改完成，结果已保存到对应的文件夹中！"
+echo "所有配置和二进制已同步到远端，结果已保存到对应的文件夹中！"
